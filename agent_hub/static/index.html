@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Hub</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%238cf0c9'/%3E%3Ctext x='32' y='39' text-anchor='middle' font-family='monospace' font-size='22' font-weight='700' fill='%2306251b'%3EAH%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">AH</div>
+        <div>
+          <h1>Agent Hub</h1>
+          <p>Session registry · naming · late-binding links</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="mode-badge" title="现有 CLI 保持只读；只有在本界面新建的 session 会被 Hub 控制">
+          <span class="dot"></span>现有会话零侵入
+        </span>
+        <button id="newSessionButton" class="button primary">新建对话</button>
+        <button id="scanButton" class="button secondary">立即扫描</button>
+        <button id="themeButton" class="icon-button" aria-label="切换主题">◐</button>
+      </div>
+    </header>
+
+    <section class="metrics" aria-label="总览">
+      <div><strong id="metricOnline">0</strong><span>在线</span></div>
+      <div><strong id="metricTotal">0</strong><span>已发现</span></div>
+      <div><strong id="metricMessageable">0</strong><span>可原生通信</span></div>
+      <div><strong id="metricLinks">0</strong><span>草拟连接</span></div>
+    </section>
+
+    <main class="workspace">
+      <aside class="session-rail">
+        <div class="rail-header">
+          <div>
+            <h2>Sessions</h2>
+            <p id="scanStatus">等待扫描</p>
+          </div>
+        </div>
+        <label class="search">
+          <span>⌕</span>
+          <input id="searchInput" placeholder="名称、项目、cwd…" />
+        </label>
+        <div id="runtimeFilters" class="filters" aria-label="Runtime 筛选"></div>
+        <div id="sessionList" class="session-list"></div>
+      </aside>
+
+      <section class="detail-panel">
+        <div id="emptyState" class="empty-state">
+          <div class="empty-symbol">↗</div>
+          <h2>选择一个 session</h2>
+          <p>当前只读取 session 状态并管理 Hub 内名称，不会向任何 Agent 发送消息。</p>
+        </div>
+
+        <div id="sessionDetail" class="detail-content hidden">
+          <div class="detail-header">
+            <div>
+              <div id="detailBadges" class="badges"></div>
+              <h2 id="detailTitle"></h2>
+              <p id="detailSubtitle" class="mono"></p>
+            </div>
+            <span id="detailPresence" class="status-chip"></span>
+          </div>
+
+          <section id="chatSection" class="section chat-section">
+            <div class="section-heading">
+              <div>
+                <h3>对话</h3>
+                <p id="chatHint">Hub-managed session 可直接在这里持续对话。</p>
+              </div>
+              <span id="chatRuntimeState" class="status-chip"></span>
+            </div>
+            <div id="chatUnavailable" class="chat-unavailable hidden">
+              <strong>这是外部 session，目前只能查看和命名。</strong>
+              <p>从“新建对话”创建 Hub-managed session 后，可直接在本页面聊天、切换和恢复。</p>
+            </div>
+            <div id="chatMessages" class="chat-messages"></div>
+            <div id="approvalList" class="approval-list"></div>
+            <form id="chatForm" class="chat-composer">
+              <textarea id="chatInput" rows="2" placeholder="输入消息；Ctrl/⌘ + Enter 发送"></textarea>
+              <button id="sendMessageButton" class="button primary" type="submit">发送</button>
+            </form>
+          </section>
+
+          <section class="section">
+            <div class="section-heading">
+              <div>
+                <h3>名称与身份</h3>
+                <p>Alias 用于稳定寻址；改名不会改变 session_uid。</p>
+              </div>
+              <button id="saveNamingButton" class="button primary">保存</button>
+            </div>
+            <div class="form-grid">
+              <label>
+                <span>Alias</span>
+                <input id="aliasInput" placeholder="generation/video" />
+                <small>小写字母、数字、点、下划线、斜杠、连字符</small>
+              </label>
+              <label>
+                <span>显示标题</span>
+                <input id="titleInput" placeholder="自动使用当前任务摘要" />
+                <small>只影响 Hub UI，不影响内部 ID</small>
+              </label>
+              <label>
+                <span>角色</span>
+                <input id="roleInput" placeholder="video_generator" />
+                <small>角色与具体 session 名称分离</small>
+              </label>
+              <label>
+                <span>Runtime 原生名称</span>
+                <input id="nativeNameInput" disabled />
+                <small>未来启用 shim 后再同步到 runtime</small>
+              </label>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-heading">
+              <div>
+                <h3>建立 Late-binding Link</h3>
+                <p>当前只创建草稿，不会向现有 session 投递消息。</p>
+              </div>
+            </div>
+            <div class="link-builder">
+              <div class="source-node">
+                <span>FROM</span>
+                <strong id="linkSource"></strong>
+              </div>
+              <div class="link-arrow">→</div>
+              <label>
+                <span>Target</span>
+                <select id="linkTarget"></select>
+              </label>
+              <label>
+                <span>Mode</span>
+                <select id="linkMode">
+                  <option value="task_handoff">Task handoff</option>
+                  <option value="notify">Notify only</option>
+                  <option value="discussion">Bidirectional discussion</option>
+                </select>
+              </label>
+              <label>
+                <span>Trigger</span>
+                <select id="linkTrigger">
+                  <option value="artifact.ready">artifact.ready</option>
+                  <option value="task.completed">task.completed</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </label>
+              <button id="createLinkButton" class="button primary">创建草稿</button>
+            </div>
+          </section>
+
+          <section class="section facts-section">
+            <div class="section-heading">
+              <div>
+                <h3>运行信息</h3>
+                <p>从公开 CLI 状态、/proc 和只读 SQLite 中发现。</p>
+              </div>
+            </div>
+            <dl id="sessionFacts" class="facts"></dl>
+            <details>
+              <summary>原始 metadata</summary>
+              <pre id="rawMetadata"></pre>
+            </details>
+          </section>
+        </div>
+      </section>
+
+      <aside class="activity-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Links</h2>
+            <p>协作关系草稿</p>
+          </div>
+        </div>
+        <div id="linkList" class="link-list"></div>
+        <div class="panel-heading diagnostics-heading">
+          <div>
+            <h2>Diagnostics</h2>
+            <p>能力与兼容性</p>
+          </div>
+        </div>
+        <div id="diagnostics" class="diagnostics"></div>
+      </aside>
+    </main>
+
+    <dialog id="newSessionDialog" class="session-dialog">
+      <form id="newSessionForm" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <h2>新建 Hub 对话</h2>
+            <p>只创建新 session，不改变已有 CLI 的启动和使用方式。</p>
+          </div>
+          <button id="closeDialogButton" class="icon-button" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="dialog-body">
+          <label>
+            <span>Runtime</span>
+            <select id="newRuntime">
+              <option value="tcodex">tcodex（已验证）</option>
+              <option value="tclaude">tclaude（已验证）</option>
+              <option value="codex">codex（beta）</option>
+              <option value="claude">claude（beta）</option>
+            </select>
+          </label>
+          <label>
+            <span>工作目录</span>
+            <input id="newCwd" value="/home/luyi" />
+          </label>
+          <label>
+            <span>Alias</span>
+            <input id="newAlias" placeholder="generation/video" />
+          </label>
+          <label>
+            <span>显示标题</span>
+            <input id="newTitle" placeholder="视频生成" />
+          </label>
+          <label>
+            <span>角色</span>
+            <input id="newRole" placeholder="video_generator" />
+          </label>
+          <label>
+            <span>权限</span>
+            <select id="newPermission">
+              <option value="safe">Safe：工作区写入，危险操作需确认</option>
+              <option value="read-only">Read only</option>
+              <option value="full-access">Full access：仅可信任务使用</option>
+            </select>
+          </label>
+          <p class="dialog-note">
+            Codex/tcodex 使用对应 app-server；Claude/tclaude 使用持久 stream-json。Runtime 只在你创建该会话时启动。
+          </p>
+        </div>
+        <div class="dialog-actions">
+          <button id="cancelNewSessionButton" class="button secondary" type="button">取消</button>
+          <button id="createSessionButton" class="button primary" type="submit">创建并打开</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="./static/app.js"></script>
+  </body>
+</html>

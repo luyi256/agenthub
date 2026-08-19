@@ -1,0 +1,39 @@
+__pycache__/
+*.py[codz]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Agent Hub runtime state (SQLite, logs, workers, sockets, locks)
+agent_hub/data/
+
+# VS Code extension build/install artifacts
+agent_hub_vscode/node_modules/
+agent_hub_vscode/dist/
+agent_hub_vscode/*.vsix
+
+# Local migration and forensic archives are not product source
+migration-backup/
+docs/*.txt
+docs/*.tsv
+agent_hub/tests/e2e/artifacts/
+
+# General generated files
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.sock
+*.tmp
+.DS_Store
+.vscode/

@@ -1,0 +1,160 @@
+{
+  "name": "agent-hub",
+  "displayName": "Agent Hub",
+  "description": "Run Claude, Codex, tclaude, and tcodex sessions in a project-scoped VS Code chat backed by tmux.",
+  "version": "0.2.6",
+  "publisher": "luyi-local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.98.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:agenthub.chatView"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "agenthub.sidebar",
+          "title": "Agent Hub",
+          "icon": "media/agenthub.svg"
+        }
+      ]
+    },
+    "views": {
+      "agenthub.sidebar": [
+        {
+          "type": "webview",
+          "id": "agenthub.chatView",
+          "name": "Agent Hub"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agenthub.focus",
+        "title": "Agent Hub: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "agenthub.newSession",
+        "title": "Agent Hub: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "agenthub.refresh",
+        "title": "Agent Hub: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agenthub.openLogs",
+        "title": "Agent Hub: Open Logs"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agenthub.newSession",
+          "when": "view == agenthub.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agenthub.refresh",
+          "when": "view == agenthub.chatView",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "agenthub.focus"
+        },
+        {
+          "command": "agenthub.newSession"
+        },
+        {
+          "command": "agenthub.openLogs"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Agent Hub",
+      "properties": {
+        "agentHub.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8766",
+          "scope": "machine",
+          "description": "Agent Hub coordinator URL on the remote workspace host."
+        },
+        "agentHub.autoStartServer": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Start the repository Agent Hub server in dedicated tmux when its loopback HTTP URL is not reachable."
+        },
+        "agentHub.serverProjectPath": {
+          "type": "string",
+          "default": "/home/luyi/agenthub",
+          "scope": "machine",
+          "description": "Repository path that contains agent_hub/run.sh."
+        },
+        "agentHub.tmuxSocketName": {
+          "type": "string",
+          "default": "agenthub",
+          "scope": "machine",
+          "pattern": "^(?!default$)[A-Za-z0-9_.-]{1,48}$",
+          "description": "Dedicated tmux socket used only to bootstrap an offline local coordinator. Once connected, the extension uses tmux_socket_name returned by /api/health. Keep this equal to AGENTHUB_TMUX_SOCKET."
+        },
+        "agentHub.defaultRuntime": {
+          "type": "string",
+          "enum": [
+            "tcodex",
+            "tclaude",
+            "codex",
+            "claude"
+          ],
+          "default": "tcodex"
+        },
+        "agentHub.enablePublicRuntimes": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Show public Claude/Codex runtimes. Keep disabled unless those CLIs are authenticated in the remote Extension Host environment."
+        },
+        "agentHub.defaultPermission": {
+          "type": "string",
+          "enum": [
+            "safe",
+            "read-only",
+            "full-access"
+          ],
+          "default": "safe"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test:static": "npm run build && node --test test/static.test.cjs",
+    "test": "npm run typecheck && npm run test:static",
+    "package": "npm run build && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.98.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0",
+    "markdown-it": "^14.3.0"
+  }
+}
