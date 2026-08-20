@@ -160,6 +160,7 @@ class GenTmuxService:
         text: str,
         *,
         allow_busy: bool = False,
+        verify_submission: bool = True,
     ) -> dict[str, Any]:
         """Paste one user message into an exact Agent pane in tmux gen."""
         text = text.strip()
@@ -180,6 +181,8 @@ class GenTmuxService:
         current_pgid = self._foreground_pgid(window["pane_pid"])
         if current_pgid != agent_pgid:
             raise RuntimeError("Agent 前台进程已变化，请刷新后重试")
+        initial_state = str(window.get("state") or "idle")
+        rollout_before = self._rollout_signature(window.get("rollout_path"))
         buffer_name = f"agenthub-{uuid.uuid4().hex[:12]}"
         loaded = self._tmux_with_input(
             text,
@@ -191,6 +194,7 @@ class GenTmuxService:
         self._ensure_success(loaded, "写入 tmux 消息缓冲区")
         pasted = self._tmux(
             "paste-buffer",
+            "-p",
             "-b",
             buffer_name,
             "-t",
@@ -198,9 +202,9 @@ class GenTmuxService:
             "-d",
         )
         self._ensure_success(pasted, "粘贴消息到 tmux Agent")
-        # Codex/Claude TUIs consume bracketed-paste asynchronously. Sending
-        # Enter in the same scheduler tick can leave the text in the editor
-        # without submitting it.
+        # Use tmux -p so Codex/Claude receive an actual bracketed paste.
+        # These TUIs consume that paste asynchronously; Enter in the same
+        # scheduler tick can leave the text in the editor without submitting.
         time.sleep(0.5)
         submitted = self._tmux(
             "send-keys",
@@ -209,12 +213,72 @@ class GenTmuxService:
             "Enter",
         )
         self._ensure_success(submitted, "提交 tmux Agent 消息")
+        submitted_at = time.time()
+        if verify_submission:
+            self._verify_text_submission(
+                window_id,
+                expected_runtime=window.get("runtime"),
+                expected_runtime_id=window.get("runtime_id"),
+                submitted_at=submitted_at,
+                initial_state=initial_state,
+                rollout_before=rollout_before,
+            )
         self._invalidate()
         return {
             **window,
             "submitted": True,
+            "submitted_at": submitted_at,
             "delivery": "queued" if window["state"] == "busy" else "turn",
         }
+
+    def _verify_text_submission(
+        self,
+        window_id: str,
+        *,
+        expected_runtime: str | None,
+        expected_runtime_id: str | None,
+        submitted_at: float,
+        initial_state: str,
+        rollout_before: tuple[int, int] | None,
+        timeout: float = 5.0,
+    ) -> None:
+        """Require evidence that the exact TUI consumed the submitted text."""
+        deadline = time.monotonic() + timeout
+        last_state = "idle"
+        while time.monotonic() < deadline:
+            self._invalidate()
+            try:
+                window = self.get_window(window_id)
+            except Exception as error:
+                raise RuntimeError(
+                    "提交消息后原 tmux Agent 已退出或窗口已变化"
+                ) from error
+            if (
+                window.get("runtime") != expected_runtime
+                or window.get("runtime_id") != expected_runtime_id
+            ):
+                raise RuntimeError("提交消息后 tmux Agent 身份已变化")
+            last_state = str(window.get("state") or "idle")
+            if initial_state != "busy" and last_state in {"busy", "blocked"}:
+                return
+            rollout_after = self._rollout_signature(window.get("rollout_path"))
+            if rollout_after and rollout_after != rollout_before:
+                return
+            time.sleep(0.2)
+        raise RuntimeError(
+            "消息已写入 tmux，但 Agent TUI 未确认接收；"
+            f"当前状态为 {last_state}，请重试或打开原会话检查"
+        )
+
+    @staticmethod
+    def _rollout_signature(path: str | None) -> tuple[int, int] | None:
+        if not path:
+            return None
+        try:
+            stat = Path(path).stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return None
 
     def bind_chat(
         self,

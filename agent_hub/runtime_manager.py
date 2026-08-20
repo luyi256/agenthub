@@ -1221,7 +1221,7 @@ class RuntimeManager:
         )
         await self.broadcast_messages(uid)
         try:
-            await asyncio.to_thread(
+            delivery = await asyncio.to_thread(
                 self.gen_tmux.send_text, window_id, text
             )
         except Exception:
@@ -1239,6 +1239,12 @@ class RuntimeManager:
                 window_id=window_id,
                 assistant_message_id=assistant["message_id"],
                 baseline=baseline,
+                relay_id=relay_id,
+                rollout_path=(
+                    delivery.get("rollout_path")
+                    or window.get("rollout_path")
+                    or config.get("source_rollout_path")
+                ),
             )
         )
         self._gen_reply_tasks[uid] = task
@@ -1259,15 +1265,18 @@ class RuntimeManager:
         window_id: str,
         assistant_message_id: str,
         baseline: set[str],
+        relay_id: str,
+        rollout_path: str | None,
     ) -> None:
         uid = session["session_uid"]
-        config = dict(session.get("managed_config") or {})
         deadline = asyncio.get_running_loop().time() + 1800
         try:
             while asyncio.get_running_loop().time() < deadline:
                 history = await self.sync_gen_relay_history(
                     session,
-                    rollout_path=config.get("source_rollout_path"),
+                    rollout_path=rollout_path,
+                    relay_id=relay_id,
+                    baseline=baseline,
                 )
                 assistant = self.db.get_message(assistant_message_id)
                 if assistant and assistant["status"] == "completed":
@@ -1275,19 +1284,31 @@ class RuntimeManager:
                     await self.broadcast_messages(uid)
                     await self.broadcast_snapshot()
                     return
-                with contextlib.suppress(Exception):
+                try:
                     window = await asyncio.to_thread(
                         self.gen_tmux.get_window, window_id
                     )
-                    if window.get("state") == "blocked":
-                        self.db.update_session_runtime_state(
-                            uid, status="waiting_approval"
-                        )
-                        await self.broadcast_snapshot()
-                    elif window.get("state") == "busy":
-                        self.db.update_session_runtime_state(
-                            uid, status="running"
-                        )
+                except Exception as error:
+                    raise RuntimeError(
+                        "原 tmux Agent 已退出或窗口已变化"
+                    ) from error
+                if (
+                    window.get("runtime") != session["runtime"]
+                    or window.get("runtime_id") != session["runtime_id"]
+                ):
+                    raise RuntimeError("tmux Agent 会话身份已变化")
+                current_rollout = window.get("rollout_path")
+                if current_rollout:
+                    rollout_path = current_rollout
+                if window.get("state") == "blocked":
+                    self.db.update_session_runtime_state(
+                        uid, status="waiting_approval"
+                    )
+                    await self.broadcast_snapshot()
+                elif window.get("state") == "busy":
+                    self.db.update_session_runtime_state(
+                        uid, status="running"
+                    )
                 await asyncio.sleep(0.6)
             raise RuntimeError("等待 tmux Agent 回复超时")
         except asyncio.CancelledError:
@@ -1307,6 +1328,8 @@ class RuntimeManager:
         session: dict[str, Any],
         *,
         rollout_path: str | None = None,
+        relay_id: str | None = None,
+        baseline: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         uid = session["session_uid"]
         config = dict(session.get("managed_config") or {})
@@ -1334,6 +1357,10 @@ class RuntimeManager:
             if message["role"] == "human"
             and (message.get("metadata") or {}).get("relay") == "tmux-gen"
             and not (message.get("metadata") or {}).get("native_message_id")
+            and (
+                relay_id is None
+                or (message.get("metadata") or {}).get("relay_id") == relay_id
+            )
         ]
         pending_assistants = [
             message
@@ -1341,12 +1368,18 @@ class RuntimeManager:
             if message["role"] == "assistant"
             and (message.get("metadata") or {}).get("relay") == "tmux-gen"
             and not (message.get("metadata") or {}).get("native_message_id")
-            and message["status"] in {"streaming", "interrupted", "failed"}
+            and message["status"] == "streaming"
+            and (
+                relay_id is None
+                or (message.get("metadata") or {}).get("relay_id") == relay_id
+            )
         ]
         imports: list[dict[str, Any]] = []
         for item in history:
             native_id = item["message_id"]
             if native_id in native_seen:
+                continue
+            if baseline is not None and native_id in baseline:
                 continue
             if item["role"] == "human":
                 match = next(

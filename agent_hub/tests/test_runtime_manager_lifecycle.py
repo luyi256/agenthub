@@ -133,7 +133,9 @@ class FakeGenTmux:
         text: str,
         *,
         allow_busy: bool = False,
+        verify_submission: bool = True,
     ) -> dict[str, Any]:
+        del verify_submission
         assert window_id == "@9"
         self.send_count += 1
         self.sent_texts.append(text)
@@ -334,7 +336,10 @@ class RuntimeManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             stored_session: dict[str, Any],
             *,
             rollout_path: str | None = None,
+            relay_id: str | None = None,
+            baseline: set[str] | None = None,
         ) -> list[dict[str, Any]]:
+            del relay_id, baseline
             nonlocal history_calls
             history_calls += 1
             if history_calls < 2:
@@ -375,6 +380,71 @@ class RuntimeManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         assert stored
         self.assertEqual(stored["status"], "completed")
         self.assertEqual(stored["content"], "原 TUI 回复")
+
+    async def test_gen_relay_does_not_match_reply_to_old_failed_placeholder(
+        self,
+    ) -> None:
+        gen_tmux = FakeGenTmux()
+        self.manager.gen_tmux = gen_tmux  # type: ignore[assignment]
+        session = self.db.register_managed_session(
+            runtime="tcodex",
+            runtime_id="thread-1",
+            runtime_version="1.0",
+            native_name="gen-import",
+            alias="gen/old-failure",
+            user_title="Imported gen window",
+            role="imported-tmux-gen",
+            cwd=str(self.root),
+            transport="gen-tmux-relay",
+            managed_config={"source_tmux_window_id": "@9"},
+            capabilities={"chat": True},
+        )
+        self.db.add_message(
+            session["session_uid"],
+            "assistant",
+            "旧超时",
+            status="failed",
+            metadata={"relay": "tmux-gen", "relay_id": "old"},
+        )
+        current = self.db.add_message(
+            session["session_uid"],
+            "assistant",
+            "",
+            status="streaming",
+            metadata={"relay": "tmux-gen", "relay_id": "current"},
+        )
+        native = {
+            "message_id": "hist_new_reply",
+            "role": "assistant",
+            "content": "新回答",
+            "status": "completed",
+            "created_at": "2026-08-20T00:00:00+00:00",
+            "updated_at": "2026-08-20T00:00:00+00:00",
+            "metadata": {},
+        }
+
+        with patch(
+            "agent_hub.runtime_manager.load_runtime_history",
+            return_value=[native],
+        ):
+            await self.manager.sync_gen_relay_history(
+                session,
+                relay_id="current",
+                baseline=set(),
+            )
+
+        messages = self.db.list_messages(session["session_uid"])
+        old = next(
+            item
+            for item in messages
+            if (item.get("metadata") or {}).get("relay_id") == "old"
+        )
+        matched = self.db.get_message(current["message_id"])
+        assert matched
+        self.assertEqual(old["status"], "failed")
+        self.assertEqual(old["content"], "旧超时")
+        self.assertEqual(matched["status"], "completed")
+        self.assertEqual(matched["content"], "新回答")
 
     async def test_busy_gen_tmux_session_rejects_send(self) -> None:
         gen_tmux = FakeGenTmux()
@@ -459,8 +529,10 @@ class RuntimeManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             stored_session: dict[str, Any],
             *,
             rollout_path: str | None = None,
+            relay_id: str | None = None,
+            baseline: set[str] | None = None,
         ) -> list[dict[str, Any]]:
-            del stored_session, rollout_path
+            del stored_session, rollout_path, relay_id, baseline
             nonlocal sync_calls
             sync_calls += 1
             if sync_calls == 1:

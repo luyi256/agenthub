@@ -2,7 +2,7 @@
   "name": "agent-hub",
   "displayName": "Agent Hub",
   "description": "Run Claude, Codex, tclaude, and tcodex sessions in a project-scoped VS Code chat backed by tmux.",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "luyi-local",
   "private": true,
   "engines": {

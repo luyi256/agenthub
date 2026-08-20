@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.7 — 2026-08-20
+
+- Send imported `tmux gen` messages as real bracketed paste and verify that the
+  exact Agent TUI accepted the submission before beginning the long reply wait.
+- Match native replies only to the current relay turn, so an old
+  failed/interrupted placeholder cannot consume a later reply.
+- Follow the live rollout path while monitoring and fail immediately if the
+  source tmux window exits or changes runtime identity.
+
 ## 0.2.6 — 2026-08-19
 
 - Add explicit per-session close controls to the top tab bar and session menu.

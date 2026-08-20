@@ -262,12 +262,17 @@ class GenTmuxServiceTests(unittest.TestCase):
         ), patch(
             "agent_hub.gen_tmux.time.sleep"
         ):
-            result = self.service.send_text("@2", "继续处理")
+            result = self.service.send_text(
+                "@2", "继续处理", verify_submission=False
+            )
 
         self.assertTrue(result["submitted"])
         self.assertEqual(inputs, ["继续处理"])
         self.assertEqual(calls[0][0], "load-buffer")
-        self.assertEqual(calls[1][0], "paste-buffer")
+        self.assertEqual(
+            calls[1],
+            ("paste-buffer", "-p", "-b", calls[0][2], "-t", "%2", "-d"),
+        )
         self.assertEqual(calls[2], ("send-keys", "-t", "%2", "Enter"))
 
     def test_send_text_can_queue_while_busy_when_explicitly_allowed(
@@ -307,11 +312,52 @@ class GenTmuxServiceTests(unittest.TestCase):
                 "@2",
                 "运行中补充",
                 allow_busy=True,
+                verify_submission=False,
             )
 
         self.assertTrue(result["submitted"])
         self.assertEqual(result["delivery"], "queued")
         self.assertEqual(calls[-1], ("send-keys", "-t", "%2", "Enter"))
+
+    def test_send_text_fails_when_tui_does_not_confirm_submission(
+        self,
+    ) -> None:
+        window = {
+            "window_id": "@2",
+            "window_index": 2,
+            "pane_id": "%2",
+            "pane_pid": 102,
+            "agent_pgid": 202,
+            "agent_present": True,
+            "runtime": "tcodex",
+            "runtime_id": "thread-2",
+            "rollout_path": None,
+            "state": "idle",
+        }
+
+        with patch.object(
+            self.service, "get_window", return_value=window
+        ), patch.object(
+            self.service, "_verify_window"
+        ), patch.object(
+            self.service, "_foreground_pgid", return_value=202
+        ), patch.object(
+            self.service,
+            "_tmux",
+            return_value=CompletedProcess([], 0, "", ""),
+        ), patch.object(
+            self.service,
+            "_tmux_with_input",
+            return_value=CompletedProcess([], 0, "", ""),
+        ), patch.object(
+            self.service,
+            "_verify_text_submission",
+            side_effect=RuntimeError("TUI 未确认"),
+        ), patch(
+            "agent_hub.gen_tmux.time.sleep"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "TUI 未确认"):
+                self.service.send_text("@2", "未提交消息")
 
     def test_refuses_window_outside_gen(self) -> None:
         with patch.object(
