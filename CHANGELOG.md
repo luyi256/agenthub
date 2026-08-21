@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.8 — 2026-08-21
+
+- Repair stale `tmux gen` chat bindings when a tmux window ID is reused by a
+  different Agent runtime, preventing live windows from pointing at a closed
+  database session.
+- Add model and reasoning-effort selectors when creating a session while
+  preserving the existing default-model behavior.
+- Show the actual current model and reasoning effort below the composer and in
+  the conversation header.
+- Preserve selected model settings when a managed tmux worker is relaunched.
+- Preserve an active text selection while transcript polling continues, so
+  selecting part of a reply no longer expands or resets to the whole message.
+
 ## 0.2.7 — 2026-08-20
 
 - Send imported `tmux gen` messages as real bracketed paste and verify that the

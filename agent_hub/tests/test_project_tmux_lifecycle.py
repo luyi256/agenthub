@@ -55,6 +55,8 @@ class ProjectTmuxLifecycleTests(unittest.TestCase):
             workspace_id="abcd1234",
             workspace_name="unit",
             resume_runtime_id="thread-1",
+            model="gpt-5.6-luna",
+            reasoning_effort="high",
         )
 
     def test_new_window_failure_removes_config_without_kill(self) -> None:
@@ -69,6 +71,19 @@ class ProjectTmuxLifecycleTests(unittest.TestCase):
         self.assertFalse(
             any(args[0] == "kill-window" for args, _ in manager.commands)
         )
+        config_files = list(manager.worker_dir.glob("*.json"))
+        self.assertEqual(config_files, [])
+
+    def test_worker_config_preserves_model_selection(self) -> None:
+        manager = RecordingTmuxManager(self.config)
+
+        launch = self._launch(manager)
+        config = __import__("json").loads(
+            Path(launch.config_path).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(config["model"], "gpt-5.6-luna")
+        self.assertEqual(config["reasoning_effort"], "high")
 
     def test_post_create_failure_kills_exact_window_and_removes_files(
         self,

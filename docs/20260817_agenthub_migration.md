@@ -139,3 +139,10 @@ Chat 输入框在 Agent 运行时保持可用，并按 runtime 的真实能力�
 ## 0.2.6 会话关闭
 
 顶部每个会话标签新增 `×`，`⋯` 菜单也提供“关闭会话”。关闭前由 VS Code modal 二次确认；managed session 会停止并清理其精确 worker/tmux window，导入的 `tmux gen` session 会在 runtime/window ID 校验后关闭精确 window。聊天记录保留在 SQLite，但 session 标记为 `closed`，不会再出现在顶部或历史恢复入口，也不会因发送消息而自动 resume。隔离 E2E 验证 worker window 从 workspace tmux 中消失、hub keeper window 保留、closed 状态持久化且默认 tmux PID 不变。
+
+## 0.2.8 模型选择、窗口重绑与文字选择
+
+- 新建会话可选择模型与推理强度；不选择时仍沿用 runtime 默认配置。选择项会写入 tmux worker 配置，在 worker 重启/恢复后继续保留。
+- 对话输入框左下角及会话标题区显示实际模型与推理强度。
+- `tmux gen` window ID 被复用或原绑定已关闭时，后端会核对 runtime、pane、rollout 与数据库配置并重新绑定，避免活窗口继续指向 closed session。
+- transcript 轮询遇到用户正在选择文字时会延后 DOM 更新，结束选择后再刷新，避免局部选择突然扩成整条消息。

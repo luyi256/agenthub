@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
-from agent_hub.session_worker import CodexRuntime
+from agent_hub.session_worker import ClaudeRuntime, CodexRuntime
 
 
 class FakeWorker:
@@ -241,6 +241,94 @@ class CodexApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(worker.state["active_message_id"])
         self.assertEqual(worker.state["active_text"], "")
         self.assertEqual(worker.state["status"], "error")
+
+    async def test_send_uses_configured_model_and_effort(self) -> None:
+        worker, runtime = self.runtime()
+        worker.config.update(
+            {"model": "gpt-5.6-luna", "reasoning_effort": "high"}
+        )
+        runtime.runtime_id = "thread-1"
+        captured: dict[str, Any] = {}
+
+        async def successful_request(
+            method: str,
+            params: dict[str, Any],
+            *,
+            timeout: float = 120,
+        ) -> dict[str, Any]:
+            del timeout
+            captured["method"] = method
+            captured["params"] = params
+            return {"turn": {"id": "turn-1"}}
+
+        runtime.request = successful_request  # type: ignore[method-assign]
+        await runtime.send("hello", "message-1")
+
+        self.assertEqual(captured["method"], "turn/start")
+        self.assertEqual(captured["params"]["model"], "gpt-5.6-luna")
+        self.assertEqual(captured["params"]["effort"], "high")
+
+    async def test_start_configures_selected_model_and_effort(self) -> None:
+        worker, runtime = self.runtime()
+        worker.config.update(
+            {"model": "gpt-5.6-luna", "reasoning_effort": "high"}
+        )
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def request(
+            method: str,
+            params: dict[str, Any],
+            *,
+            timeout: float = 120,
+        ) -> dict[str, Any]:
+            del timeout
+            calls.append((method, params))
+            if method == "initialize":
+                return {"userAgent": "codex/0.144.5"}
+            if method == "thread/start":
+                return {
+                    "thread": {"id": "thread-selected"},
+                    "model": "gpt-5.6-luna",
+                    "reasoningEffort": "xhigh",
+                }
+            return {}
+
+        runtime.request = request  # type: ignore[method-assign]
+        runtime.notify = AsyncMock()  # type: ignore[method-assign]
+        runtime.process = SimpleNamespace(pid=123)
+
+        with unittest.mock.patch(
+            "agent_hub.session_worker.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=runtime.process),
+        ), unittest.mock.patch.object(
+            runtime, "_read_stdout", AsyncMock()
+        ), unittest.mock.patch.object(
+            runtime, "_read_stderr", AsyncMock()
+        ):
+            details = await runtime.start()
+
+        start = next(params for method, params in calls if method == "thread/start")
+        self.assertEqual(start["model"], "gpt-5.6-luna")
+        self.assertEqual(
+            start["config"]["model_reasoning_effort"], "high"
+        )
+        self.assertEqual(details["reasoning_effort"], "high")
+
+    def test_claude_command_uses_configured_model_and_effort(self) -> None:
+        worker = FakeWorker()
+        worker.config.update(
+            {
+                "runtime": "tclaude",
+                "model": "claude-opus-5",
+                "reasoning_effort": "high",
+            }
+        )
+        command = ClaudeRuntime(worker).command()  # type: ignore[arg-type]
+
+        self.assertIn("--model", command)
+        self.assertEqual(command[command.index("--model") + 1], "claude-opus-5")
+        self.assertIn("--effort", command)
+        self.assertEqual(command[command.index("--effort") + 1], "high")
 
     async def test_active_codex_turn_uses_native_steer(self) -> None:
         worker, runtime = self.runtime()

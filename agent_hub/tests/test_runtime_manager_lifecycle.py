@@ -252,6 +252,28 @@ class RuntimeManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.codex_adapters, {})
         self.assertEqual(self.manager.claude_sessions, {})
 
+    async def test_create_session_forwards_model_to_tmux_worker(self) -> None:
+        session = await self.manager.create_session(
+            runtime="tcodex",
+            cwd=str(self.root),
+            alias="unit-model",
+            title=None,
+            role=None,
+            permission_profile="safe",
+            model="gpt-5.6-luna",
+            reasoning_effort="high",
+        )
+
+        launch = self.fake_tmux.launch_kwargs[0]
+        self.assertEqual(launch["model"], "gpt-5.6-luna")
+        self.assertEqual(launch["reasoning_effort"], "high")
+        self.assertEqual(
+            session["managed_config"]["model"], "gpt-5.6-luna"
+        )
+        self.assertEqual(
+            session["managed_config"]["reasoning_effort"], "high"
+        )
+
     async def test_ensure_live_migrates_historical_app_server_session(
         self,
     ) -> None:

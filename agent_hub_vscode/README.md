@@ -58,7 +58,7 @@ npm run package
 Result:
 
 ```text
-agent-hub-0.2.7.vsix
+agent-hub-0.2.8.vsix
 ```
 
 ## Install on Remote SSH host
@@ -66,7 +66,7 @@ agent-hub-0.2.7.vsix
 Use VS Code's **Extensions: Install from VSIX...** and select the file, or run the remote VS Code CLI with an active IPC socket:
 
 ```bash
-code --install-extension agent-hub-0.2.7.vsix --force
+code --install-extension agent-hub-0.2.8.vsix --force
 ```
 
 After installing or updating, reload the VS Code window if the new view is not yet visible.

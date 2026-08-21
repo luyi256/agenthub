@@ -44,7 +44,24 @@ type HubSession = {
   cwd?: string | null;
   role?: string | null;
   capabilities?: Record<string, any>;
+  metadata?: Record<string, any>;
   managed_config?: Record<string, any>;
+};
+
+type RuntimeModelOption = {
+  id: string;
+  label: string;
+  description?: string;
+  default?: boolean;
+  reasoning_efforts?: string[];
+  default_reasoning_effort?: string | null;
+};
+
+type RuntimeOption = {
+  default_model?: string | null;
+  models?: RuntimeModelOption[];
+  custom_model?: boolean;
+  reasoning_efforts?: string[];
 };
 
 type HubMessage = {
@@ -83,6 +100,7 @@ type Snapshot = {
   sessions: HubSession[];
   counts: Record<string, number>;
   mode: string;
+  runtime_options?: Record<string, RuntimeOption>;
 };
 
 type GenWindow = {
@@ -109,6 +127,8 @@ type GenWindow = {
   manual_attn?: "red" | "yellow" | null;
   attn_source?: "manual" | "automatic" | null;
   pane_count: number;
+  model?: string | null;
+  reasoning_effort?: string | null;
 };
 
 type GenSnapshot = {
@@ -582,6 +602,9 @@ class AgentHubViewProvider implements vscode.WebviewViewProvider {
           title,
           role: String(payload.role ?? "").trim() || null,
           permission_profile: permission,
+          model: String(payload.model ?? "").trim() || null,
+          reasoning_effort:
+            String(payload.reasoning_effort ?? "").trim() || null,
           workspace_id: workspace.id,
           workspace_name: workspace.name,
           use_tmux: true
@@ -1305,8 +1328,11 @@ class AgentHubViewProvider implements vscode.WebviewViewProvider {
   <section class="approvals" id="approvals"></section>
   <form class="composer" id="composer">
     <textarea id="input" rows="3" placeholder="给当前 Agent 发送消息…"></textarea>
-    <div class="composer-footer">
-      <span class="composer-hint" id="composerHint">请先新建或选择一个对话</span>
+        <div class="composer-footer">
+      <div class="composer-context">
+        <span class="composer-model" id="composerModel">未选择模型</span>
+        <span class="composer-hint" id="composerHint">请先新建或选择一个对话</span>
+      </div>
       <button class="send" id="send" type="submit">发送</button>
     </div>
   </form>
@@ -1321,6 +1347,12 @@ class AgentHubViewProvider implements vscode.WebviewViewProvider {
           <option value="tcodex">tcodex（推荐，适合编码和执行任务）</option>
           <option value="tclaude">tclaude（适合分析和写作）</option>
         </select>
+      </label>
+      <label>模型
+        <select id="newModel"></select>
+      </label>
+      <label id="newReasoningLabel">推理强度
+        <select id="newReasoning"></select>
       </label>
       <label>对话名称
         <input id="newAlias" placeholder="例如：视频生成、Prompt 优化">
@@ -1672,6 +1704,22 @@ select,
 textarea { font: inherit; }
 
 button { cursor: pointer; }
+
+button,
+.meta,
+.activity-heading,
+.composer-footer,
+.conversation-head,
+.tab-bar,
+.workspace-line {
+  user-select: none;
+}
+
+.transcript,
+.bubble,
+.bubble * {
+  user-select: text;
+}
 
 button:focus-visible,
 input:focus-visible,
@@ -2426,6 +2474,23 @@ textarea {
   padding: 4px 6px 6px;
 }
 
+.composer-context {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.composer-model {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-hint {
   min-width: 0;
   flex: 1;
@@ -2618,6 +2683,7 @@ const state = {
   handoffRequestId: null,
   serverOnline: false,
   enablePublicRuntimes: false,
+  runtimeOptions: {},
   stickToBottom: true,
   forceScrollBottom: true,
   unreadCount: 0,
@@ -2629,7 +2695,8 @@ const state = {
   tabRenderToken: 0,
   restoringTabScroll: false,
   lastViewportWidth: globalThis.innerWidth,
-  resizeFrame: 0
+  resizeFrame: 0,
+  transcriptRenderPending: false
 };
 
 const $ = (id) => document.getElementById(id);
@@ -2656,6 +2723,24 @@ function requestId() {
 
 function currentSession() {
   return state.sessions.find((session) => session.session_uid === state.selected);
+}
+
+function sessionModel(session = currentSession(), entry = currentEntry()) {
+  if (entry?.kind === "gen" && entry.window?.model) return entry.window.model;
+  const worker = session?.metadata?.worker || {};
+  return worker.model || session?.metadata?.model ||
+    session?.managed_config?.model ||
+    state.runtimeOptions?.[session?.runtime]?.default_model ||
+    "默认模型";
+}
+
+function sessionReasoning(session = currentSession(), entry = currentEntry()) {
+  if (entry?.kind === "gen" && entry.window?.reasoning_effort) {
+    return entry.window.reasoning_effort;
+  }
+  const worker = session?.metadata?.worker || {};
+  return worker.reasoning_effort || session?.metadata?.reasoning_effort ||
+    session?.managed_config?.reasoning_effort || "";
 }
 
 function sessionName(session) {
@@ -2883,6 +2968,10 @@ function renderHeader() {
         : "ready");
   $("sessionTags").textContent = entry
     ? entry.runtime +
+      " · " + sessionModel(session, entry) +
+      (sessionReasoning(session, entry)
+        ? " · " + sessionReasoning(session, entry)
+        : "") +
       (session?.managed_config?.permission_profile
         ? " · " + session.managed_config.permission_profile
         : "")
@@ -3063,12 +3152,27 @@ function renderActivity(activity, key, expanded) {
 function renderMessages() {
   const root = $("transcript");
   const session = currentSession();
+  const activeSelection = globalThis.getSelection?.();
+  const selectionInsideTranscript = Boolean(
+    activeSelection &&
+    !activeSelection.isCollapsed &&
+    activeSelection.rangeCount &&
+    (
+      root.contains(activeSelection.anchorNode) ||
+      root.contains(activeSelection.focusNode)
+    )
+  );
   const expandedActivities = new Set(
     [...root.querySelectorAll("details.tool-activity[open]")]
       .map((element) => element.dataset.activityId)
       .filter(Boolean)
   );
   const sessionChanged = state.renderedSessionUid !== state.selected;
+  if (selectionInsideTranscript && !sessionChanged) {
+    state.transcriptRenderPending = true;
+    return;
+  }
+  state.transcriptRenderPending = false;
   const anchor = !state.stickToBottom && !sessionChanged
     ? captureScrollAnchor(root)
     : null;
@@ -3233,6 +3337,7 @@ function renderApprovals() {
 
 function renderComposer() {
   const session = currentSession();
+  const entry = currentEntry();
   const waitingApproval = session?.status === "waiting_approval";
   const starting = session?.status === "starting";
   const running = Boolean(
@@ -3242,6 +3347,10 @@ function renderComposer() {
   $("input").disabled = disabled;
   $("send").disabled = disabled;
   $("send").textContent = running ? "追加" : "发送";
+  const model = session ? sessionModel(session, entry) : "未选择模型";
+  const effort = session ? sessionReasoning(session, entry) : "";
+  $("composerModel").textContent =
+    model + (effort ? " · " + effort : "");
   $("composerHint").textContent = !session
     ? "请先新建或选择一个对话"
     : waitingApproval
@@ -3300,7 +3409,41 @@ function openNewDialog() {
   if (Array.from(select.options).some((option) => option.value === selected)) {
     select.value = selected;
   }
+  updateNewModelOptions();
   $("newDialog").showModal();
+}
+
+function updateNewModelOptions() {
+  const runtime = $("newRuntime").value;
+  const options = state.runtimeOptions?.[runtime] || {};
+  const select = $("newModel");
+  const previous = select.value;
+  const defaultLabel = options.default_model
+    ? "默认（" + options.default_model + "）"
+    : "使用 Agent 默认模型";
+  const rows = [{ id: "", label: defaultLabel }, ...(options.models || [])];
+  select.innerHTML = rows.map((item) =>
+    '<option value="' + esc(item.id) + '">' +
+    esc(item.label || item.id) +
+    (item.description ? " · " + esc(item.description) : "") +
+    '</option>'
+  ).join("");
+  if (rows.some((item) => item.id === previous)) select.value = previous;
+  const selectedModel = (options.models || []).find(
+    (item) => item.id === select.value
+  );
+  const efforts = selectedModel?.reasoning_efforts?.length
+    ? selectedModel.reasoning_efforts
+    : (options.reasoning_efforts || []);
+  const reasoning = $("newReasoning");
+  const previousEffort = reasoning.value;
+  reasoning.innerHTML =
+    '<option value="">使用模型默认</option>' +
+    efforts.map((effort) =>
+      '<option value="' + esc(effort) + '">' + esc(effort) + '</option>'
+    ).join("");
+  if (efforts.includes(previousEffort)) reasoning.value = previousEffort;
+  $("newReasoningLabel").classList.toggle("hidden", efforts.length === 0);
 }
 
 function handoffTargets() {
@@ -3403,6 +3546,7 @@ window.addEventListener("message", (event) => {
     state.serverOnline = true;
     state.workspace = message.workspace;
     state.sessions = message.snapshot.sessions || [];
+    state.runtimeOptions = message.snapshot.runtime_options || {};
     state.selected = message.selectedSessionUid;
     state.enablePublicRuntimes = Boolean(message.enablePublicRuntimes);
     if (previousSelected !== state.selected) {
@@ -3638,6 +3782,8 @@ $("newMessages").onclick = () => {
 };
 
 $("newSession").onclick = openNewDialog;
+$("newRuntime").onchange = updateNewModelOptions;
+$("newModel").onchange = updateNewModelOptions;
 $("historySessions").onclick = openHistoryDialog;
 $("handoffOpen").onclick = openHandoffDialog;
 $("refresh").onclick = () => post("refresh");
@@ -3700,6 +3846,8 @@ $("newForm").onsubmit = (event) => {
   post("createSession", {
     payload: {
       runtime: $("newRuntime").value,
+      model: $("newModel").value,
+      reasoning_effort: $("newReasoning").value,
       alias: $("newAlias").value,
       cwd: $("newCwd").value,
       permission_profile: $("newPermission").value
@@ -3787,6 +3935,17 @@ $("input").onkeydown = (event) => {
 document.addEventListener("click", (event) => {
   if (!event.target.closest("#windowMenu") && !event.target.closest("#currentMenuButton")) {
     $("windowMenu").classList.add("hidden");
+  }
+});
+
+document.addEventListener("selectionchange", () => {
+  const selection = globalThis.getSelection?.();
+  if (
+    state.transcriptRenderPending &&
+    (!selection || selection.isCollapsed)
+  ) {
+    state.transcriptRenderPending = false;
+    renderMessages();
   }
 });
 

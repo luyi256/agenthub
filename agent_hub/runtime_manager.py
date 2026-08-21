@@ -15,6 +15,7 @@ from .db import AliasConflictError, HubDatabase
 from .gen_tmux import GenTmuxService
 from .naming import ascii_slug
 from .project_tmux import ProjectTmuxManager, WorkerLaunch
+from .runtime_options import validate_runtime_selection
 from .session_history import load_runtime_history
 from .worker_client import WorkerClient
 
@@ -513,6 +514,8 @@ class RuntimeManager:
         workspace_id: str | None = None,
         workspace_name: str | None = None,
         use_tmux: bool = True,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         if use_tmux is not True:
             raise ValueError(
@@ -535,6 +538,9 @@ class RuntimeManager:
             raise ValueError(f"cwd 不存在：{cwd_path}")
         if permission_profile not in {"safe", "read-only", "full-access"}:
             raise ValueError("不支持的权限模式")
+        model, reasoning_effort = validate_runtime_selection(
+            runtime, model, reasoning_effort
+        )
         native_name = ascii_slug(
             alias or title or f"{cwd_path.name}-{runtime}-{uuid.uuid4().hex[:4]}",
             fallback=f"{runtime}-session",
@@ -550,6 +556,8 @@ class RuntimeManager:
                 permission_profile=permission_profile,
                 workspace_id=workspace_id,
                 workspace_name=workspace_name,
+                model=model,
+                reasoning_effort=reasoning_effort,
             )
             self._worker_launches[launch.worker_id] = launch
             self._worker_event_buffers[launch.worker_id] = []
@@ -573,8 +581,11 @@ class RuntimeManager:
                     transport="tmux-worker",
                     managed_config={
                         "permission_profile": permission_profile,
-                        "model": details.get("model"),
-                        "reasoning_effort": details.get("reasoning_effort"),
+                        "model": model or details.get("model"),
+                        "reasoning_effort": (
+                            reasoning_effort
+                            or details.get("reasoning_effort")
+                        ),
                         "worker_id": launch.worker_id,
                         "socket_path": launch.socket_path,
                         "state_path": launch.state_path,
@@ -898,6 +909,8 @@ class RuntimeManager:
     ) -> dict[str, Any]:
         session = self.db.get_session(uid)
         if session and session.get("transport") == "gen-tmux-relay":
+            if session.get("status") == "closed":
+                raise RuntimeUnavailableError("session 已关闭")
             return await self._send_gen_tmux_message(session, text)
         live = await self.ensure_live(uid)
         if live.active_message_id:
@@ -1451,6 +1464,8 @@ class RuntimeManager:
                 workspace_id=config.get("workspace_id"),
                 workspace_name=config.get("workspace_name"),
                 resume_runtime_id=session["runtime_id"],
+                model=config.get("model"),
+                reasoning_effort=config.get("reasoning_effort"),
             )
             self._worker_launches[new_launch.worker_id] = new_launch
             self.worker_to_uid[new_launch.worker_id] = uid

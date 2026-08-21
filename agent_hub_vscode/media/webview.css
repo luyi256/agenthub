@@ -52,6 +52,22 @@ textarea { font: inherit; }
 
 button { cursor: pointer; }
 
+button,
+.meta,
+.activity-heading,
+.composer-footer,
+.conversation-head,
+.tab-bar,
+.workspace-line {
+  user-select: none;
+}
+
+.transcript,
+.bubble,
+.bubble * {
+  user-select: text;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
@@ -803,6 +819,23 @@ textarea {
   justify-content: space-between;
   gap: 8px;
   padding: 4px 6px 6px;
+}
+
+.composer-context {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.composer-model {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-hint {

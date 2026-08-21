@@ -272,3 +272,24 @@ test("sessions can be explicitly closed from the top tabs", () => {
   assert.match(extensionSource, /\.delete\(/);
   assert.match(extensionSource, /session\.status !== "closed"/);
 });
+
+test("new sessions expose model selection and show the active model", () => {
+  assert.match(extensionSource, /id="newModel"/);
+  assert.match(extensionSource, /id="newReasoning"/);
+  assert.match(extensionSource, /runtime_options/);
+  assert.match(extensionSource, /model:\s*\$\("newModel"\)\.value/);
+  assert.match(
+    extensionSource,
+    /reasoning_effort:\s*\$\("newReasoning"\)\.value/
+  );
+  assert.match(extensionSource, /id="composerModel"/);
+  assert.match(extensionSource, /function sessionModel\(/);
+  assert.match(extensionSource, /metadata\?\.worker/);
+});
+
+test("transcript polling preserves an active text selection", () => {
+  assert.match(extensionSource, /selectionInsideTranscript/);
+  assert.match(extensionSource, /transcriptRenderPending/);
+  assert.match(extensionSource, /document\.addEventListener\("selectionchange"/);
+  assert.match(extensionSource, /\.bubble \*\s*\{\s*user-select: text/);
+});

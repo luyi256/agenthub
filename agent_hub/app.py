@@ -19,6 +19,7 @@ from .discovery import DiscoveryResult, SessionDiscoverer
 from .gen_tmux import GenTmuxService
 from .naming import ascii_slug, session_uid, short_uid
 from .project_tmux import ProjectTmuxManager
+from .runtime_options import runtime_options
 from .runtime_manager import (
     RuntimeBusyError,
     RuntimeManager,
@@ -91,6 +92,7 @@ class HubService:
             "diagnostics": self.last_diagnostics,
             "last_scan_error": self.last_scan_error,
             "mode": "hybrid",
+            "runtime_options": runtime_options(),
         }
 
     async def broadcast(self, message: dict[str, Any]) -> None:
@@ -125,11 +127,61 @@ class HubService:
             self.gen_tmux.snapshot, force=force
         )
         for window in snapshot["windows"]:
+            expected_uid = session_uid(
+                window["runtime"], window["runtime_id"]
+            )
             uid = window.get("adopted_session_uid")
-            if not uid:
-                continue
-            session = self.db.get_session(uid)
-            if not session:
+            session = self.db.get_session(uid) if uid else None
+            session_config = (
+                (session.get("managed_config") or {}) if session else {}
+            )
+            bound_to_live_process = True
+            if (
+                session
+                and session["runtime"] in {"codex", "tcodex"}
+                and uid != expected_uid
+            ):
+                bound_rollout = self.gen_tmux._open_rollout_for_runtime_id(
+                    int(window.get("agent_pid") or 0),
+                    session["runtime_id"],
+                )
+                bound_to_live_process = bool(bound_rollout)
+                if bound_rollout:
+                    window["runtime"] = session["runtime"]
+                    window["runtime_id"] = session["runtime_id"]
+                    window["session_uid"] = uid
+                    window["rollout_path"] = bound_rollout
+            valid_binding = bool(
+                session
+                and session.get("transport") == "gen-tmux-relay"
+                and session.get("status") != "closed"
+                and session_config.get("source_tmux_window_id")
+                == window["window_id"]
+                and session_config.get("source_tmux_pane_id")
+                == window["pane_id"]
+                and bound_to_live_process
+            )
+            if not valid_binding and uid:
+                await asyncio.to_thread(
+                    self.gen_tmux.unbind_chat, window["window_id"]
+                )
+                try:
+                    imported = await self.import_gen_chat(
+                        window["window_id"], broadcast=False
+                    )
+                    session = imported["session"]
+                    uid = session["session_uid"]
+                    window["adopted_session_uid"] = uid
+                except RuntimeError:
+                    session = None
+                    uid = None
+                    window["adopted_session_uid"] = None
+            if not uid or not session:
+                window["chat_session_uid"] = None
+                window["chat_status"] = None
+                window["chat_transport"] = None
+                window["model"] = None
+                window["reasoning_effort"] = None
                 continue
             if session.get("transport") == "gen-tmux-relay":
                 mapped_status = {
@@ -148,9 +200,15 @@ class HubService:
             window["chat_session_uid"] = uid
             window["chat_status"] = session.get("status")
             window["chat_transport"] = session.get("transport")
+            window["model"] = self._session_model(session)
+            window["reasoning_effort"] = self._session_reasoning_effort(
+                session
+            )
         return snapshot
 
-    async def import_gen_chat(self, window_id: str) -> dict[str, Any]:
+    async def import_gen_chat(
+        self, window_id: str, *, broadcast: bool = True
+    ) -> dict[str, Any]:
         window = await asyncio.to_thread(
             self.gen_tmux.get_window, window_id
         )
@@ -161,7 +219,62 @@ class HubService:
                 raise RuntimeError(
                     "该原生 session 已由其他 Agent Hub worker 管理，不能同时桥接"
                 )
+            mapped_status = {
+                "blocked": "waiting_approval",
+                "busy": "running",
+                "done": "idle",
+                "idle": "idle",
+            }.get(window["state"], "idle")
             config = existing.get("managed_config") or {}
+            workspace = ProjectTmuxManager.identify_workspace(
+                window["cwd"],
+                workspace_name=Path(window["cwd"]).name,
+            )
+            config.update(
+                {
+                    "permission_profile": (
+                        window.get("permission_profile") or "safe"
+                    ),
+                    "workspace_id": workspace.workspace_id,
+                    "workspace_name": workspace.name,
+                    "source_tmux_session": "gen",
+                    "source_tmux_window_id": window["window_id"],
+                    "source_tmux_window_index": window["window_index"],
+                    "source_tmux_pane_id": window["pane_id"],
+                    "source_tmux_agent_pgid": window.get("agent_pgid"),
+                    "source_rollout_path": window.get("rollout_path"),
+                    "relay_mode": "native-tmux",
+                }
+            )
+            self.db.register_managed_session(
+                runtime=existing["runtime"],
+                runtime_id=existing["runtime_id"],
+                runtime_version=existing.get("runtime_version"),
+                native_name=existing.get("native_name")
+                or existing.get("auto_native_name"),
+                alias=existing.get("alias"),
+                user_title=existing.get("user_title"),
+                role=existing.get("role"),
+                cwd=window["cwd"],
+                transport="gen-tmux-relay",
+                managed_config=config,
+                capabilities=existing.get("capabilities") or {},
+                pid=window.get("agent_pid"),
+            )
+            self.db.update_session_runtime_state(
+                uid,
+                status=mapped_status,
+                presence="online",
+                pid=window.get("agent_pid"),
+                metadata_patch={
+                    "reopened_from_tmux": {
+                        "session": "gen",
+                        "window_id": window["window_id"],
+                        "window_index": window["window_index"],
+                    }
+                },
+            )
+            existing = self.db.get_session(uid) or existing
             await self.runtime_manager.sync_gen_relay_history(
                 existing,
                 rollout_path=(
@@ -265,12 +378,37 @@ class HubService:
             runtime_id=window["runtime_id"],
         )
         session = self.db.get_session(uid) or session
-        await self.broadcast({"type": "snapshot", "data": self.snapshot()})
+        if broadcast:
+            await self.broadcast({"type": "snapshot", "data": self.snapshot()})
         return {
             "session": session,
             "messages": self.db.list_messages(uid),
             "window": window,
         }
+
+    @staticmethod
+    def _session_model(session: dict[str, Any]) -> str | None:
+        metadata = session.get("metadata") or {}
+        worker = metadata.get("worker") or {}
+        config = session.get("managed_config") or {}
+        return (
+            worker.get("model")
+            or metadata.get("model")
+            or config.get("model")
+        )
+
+    @staticmethod
+    def _session_reasoning_effort(
+        session: dict[str, Any],
+    ) -> str | None:
+        metadata = session.get("metadata") or {}
+        worker = metadata.get("worker") or {}
+        config = session.get("managed_config") or {}
+        return (
+            worker.get("reasoning_effort")
+            or metadata.get("reasoning_effort")
+            or config.get("reasoning_effort")
+        )
 
     async def close_gen_window(self, window_id: str) -> dict[str, Any]:
         window = await asyncio.to_thread(
@@ -398,6 +536,8 @@ async def api_create_managed_session(request: Request) -> JSONResponse:
             workspace_id=body.get("workspace_id") or None,
             workspace_name=body.get("workspace_name") or None,
             use_tmux=True,
+            model=body.get("model") or None,
+            reasoning_effort=body.get("reasoning_effort") or None,
         )
         return JSONResponse(session, status_code=201)
     except KeyError as error:

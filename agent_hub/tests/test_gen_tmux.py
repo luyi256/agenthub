@@ -200,6 +200,47 @@ class GenTmuxServiceTests(unittest.TestCase):
             ),
             calls,
         )
+
+    def test_unbind_chat_clears_all_window_identity_options(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def fake_tmux(*args: str) -> CompletedProcess[str]:
+            calls.append(args)
+            return CompletedProcess(args, 0, "", "")
+
+        with patch.object(
+            self.service, "_verify_window"
+        ), patch.object(
+            self.service, "_tmux", side_effect=fake_tmux
+        ):
+            self.service.unbind_chat("@2")
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "set-window-option",
+                    "-t",
+                    "@2",
+                    "-u",
+                    "@agenthub_session_uid",
+                ),
+                (
+                    "set-window-option",
+                    "-t",
+                    "@2",
+                    "-u",
+                    "@agenthub_runtime",
+                ),
+                (
+                    "set-window-option",
+                    "-t",
+                    "@2",
+                    "-u",
+                    "@agenthub_runtime_id",
+                ),
+            ],
+        )
         self.assertNotIn("rename-window", {arg for call in calls for arg in call})
 
     def test_close_window_kills_only_verified_gen_window(self) -> None:

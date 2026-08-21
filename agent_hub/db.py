@@ -489,6 +489,8 @@ class HubDatabase:
                 return None
             metadata = json.loads(row["metadata_json"] or "{}")
             metadata.update(metadata_patch or {})
+            if status is not None and status != "closed":
+                metadata.pop("closed", None)
             updates = ["metadata_json = ?", "last_seen_at = ?", "updated_at = ?"]
             values: list[Any] = [
                 json.dumps(metadata, ensure_ascii=False, sort_keys=True),

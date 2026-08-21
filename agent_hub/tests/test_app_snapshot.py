@@ -134,6 +134,24 @@ class ManagedSessionApiTmuxPolicyTests(
         self.assertEqual(len(manager.calls), 1)
         self.assertIs(manager.calls[0]["use_tmux"], True)
 
+    async def test_api_forwards_optional_model_selection(self) -> None:
+        manager = FakeRuntimeManager()
+        response = await api_create_managed_session(
+            self._request(
+                {
+                    "runtime": "tcodex",
+                    "cwd": "/tmp",
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "high",
+                },
+                manager,
+            )
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(manager.calls[0]["model"], "gpt-5.6-luna")
+        self.assertEqual(manager.calls[0]["reasoning_effort"], "high")
+
 
 class ActivityApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_summary_hides_details_but_keeps_first_line(self) -> None:
@@ -205,6 +223,8 @@ class FakeImportGenTmux:
         self.cwd = cwd
         self.rollout_path = rollout_path
         self.bound: list[dict[str, str]] = []
+        self.unbound: list[str] = []
+        self.snapshot_window: dict[str, Any] | None = None
 
     def get_window(self, window_id: str) -> dict[str, Any]:
         return {
@@ -224,6 +244,19 @@ class FakeImportGenTmux:
 
     def bind_chat(self, window_id: str, **kwargs: str) -> None:
         self.bound.append({"window_id": window_id, **kwargs})
+
+    def unbind_chat(self, window_id: str) -> None:
+        self.unbound.append(window_id)
+
+    def snapshot(self, force: bool = False) -> dict[str, Any]:
+        del force
+        window = self.snapshot_window or self.get_window("@4")
+        return {
+            "tmux_session": "gen",
+            "available": True,
+            "windows": [dict(window)],
+            "attn": {"available": True},
+        }
 
 
 class GenChatImportTests(unittest.IsolatedAsyncioTestCase):
@@ -335,6 +368,41 @@ class GenChatImportTests(unittest.IsolatedAsyncioTestCase):
                 snapshot["windows"][0]["chat_transport"],
                 "gen-tmux-relay",
             )
+
+    async def test_gen_snapshot_rebinds_stale_window_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "rollout-thread-import.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {"id": "thread-import"},
+                    }
+                )
+            )
+            service = HubService(
+                HubConfig(
+                    db_path=Path(tmp) / "hub.sqlite3",
+                    tmux_socket_name="ah-unit-stale-binding",
+                )
+            )
+            fake = FakeImportGenTmux(tmp, str(rollout))
+            fake.snapshot_window = {
+                **fake.get_window("@4"),
+                "adopted_session_uid": "ses_stale",
+            }
+            service.gen_tmux = fake  # type: ignore[assignment]
+            service.runtime_manager.gen_tmux = fake  # type: ignore[assignment]
+
+            snapshot = await service.gen_snapshot(force=True)
+
+            expected_uid = result_uid = fake.bound[-1]["session_uid_value"]
+            self.assertEqual(fake.unbound, ["@4"])
+            self.assertEqual(
+                snapshot["windows"][0]["chat_session_uid"],
+                expected_uid,
+            )
+            self.assertEqual(result_uid, expected_uid)
 
 
 if __name__ == "__main__":

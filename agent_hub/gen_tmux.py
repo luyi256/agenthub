@@ -304,6 +304,23 @@ class GenTmuxService:
             self._ensure_success(result, "绑定图形 Chat")
         self._invalidate()
 
+    def unbind_chat(self, window_id: str) -> None:
+        self._verify_window(window_id)
+        for key in (
+            "@agenthub_session_uid",
+            "@agenthub_runtime",
+            "@agenthub_runtime_id",
+        ):
+            result = self._tmux(
+                "set-window-option",
+                "-t",
+                window_id,
+                "-u",
+                key,
+            )
+            self._ensure_success(result, "解除图形 Chat 绑定")
+        self._invalidate()
+
     def _find_window(self, window_id: str) -> dict[str, Any]:
         for window in self.snapshot(force=True)["windows"]:
             if window["window_id"] == window_id:
@@ -355,6 +372,8 @@ class GenTmuxService:
             agent = detected_by_pane.get(row["pane_id"])
             if not agent:
                 continue
+            adopted_runtime = row["adopted_runtime"].strip()
+            adopted_runtime_id = row["adopted_runtime_id"].strip()
             if (
                 agent.get("kind") in {"codex", "tcodex"}
                 and not self._rollout_is_open(agent)
@@ -376,7 +395,7 @@ class GenTmuxService:
                 )
                 runtime_id = (
                     self._runtime_id(agent, runtime)
-                    or row["adopted_runtime_id"]
+                    or adopted_runtime_id
                 )
                 if not runtime_id:
                     continue
@@ -556,6 +575,29 @@ class GenTmuxService:
         except (FileNotFoundError, PermissionError):
             return False
         return False
+
+    @staticmethod
+    def _open_rollout_for_runtime_id(
+        pid: int, runtime_id: str
+    ) -> str | None:
+        if pid <= 1 or not runtime_id:
+            return None
+        suffix = f"-{runtime_id}.jsonl"
+        try:
+            for fd in Path(f"/proc/{pid}/fd").iterdir():
+                try:
+                    path = str(fd.resolve())
+                except (FileNotFoundError, OSError):
+                    continue
+                if (
+                    "/sessions/" in path
+                    and "/rollout-" in path
+                    and path.endswith(suffix)
+                ):
+                    return path
+        except (FileNotFoundError, PermissionError):
+            return None
+        return None
 
     @staticmethod
     def _cmdline(pid: int) -> str:

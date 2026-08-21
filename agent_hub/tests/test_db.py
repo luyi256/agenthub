@@ -146,6 +146,35 @@ class DatabaseTests(unittest.TestCase):
             "cancelled",
         )
 
+    def test_runtime_update_reopens_session_and_clears_closed_marker(
+        self,
+    ) -> None:
+        session = self.db.register_managed_session(
+            runtime="tcodex",
+            runtime_id="thread-reopen",
+            runtime_version="1.0",
+            native_name="reopen",
+            alias=None,
+            user_title=None,
+            role=None,
+            cwd="/tmp",
+            transport="gen-tmux-relay",
+            managed_config={},
+            capabilities={"chat": True},
+        )
+        self.db.close_session(session["session_uid"], reason="test")
+
+        reopened = self.db.update_session_runtime_state(
+            session["session_uid"],
+            status="idle",
+            presence="online",
+        )
+
+        assert reopened
+        self.assertEqual(reopened["status"], "idle")
+        self.assertEqual(reopened["presence"], "online")
+        self.assertNotIn("closed", reopened["metadata"])
+
 
 if __name__ == "__main__":
     unittest.main()

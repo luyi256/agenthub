@@ -127,6 +127,8 @@ class ProjectTmuxManager:
         workspace_id: str | None,
         workspace_name: str | None,
         resume_runtime_id: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> WorkerLaunch:
         workspace = self.identify_workspace(
             cwd,
@@ -155,6 +157,8 @@ class ProjectTmuxManager:
             "native_name": native_name,
             "permission_profile": permission_profile,
             "resume_runtime_id": resume_runtime_id,
+            "model": model,
+            "reasoning_effort": reasoning_effort,
             "socket_path": str(socket_path),
             "state_path": str(state_path),
             "workspace_id": workspace.workspace_id,
