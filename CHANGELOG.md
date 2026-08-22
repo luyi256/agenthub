@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.9 — 2026-08-22
+
+- Add project-scoped search across historical user and Agent messages,
+  including closed sessions, with role filtering, highlighted excerpts, full
+  previews, and navigation back to a live managed conversation.
+- Make the composer IME-aware: Enter used to commit Chinese input or switch to
+  direct English input no longer submits the message accidentally.
+
 ## 0.2.8 — 2026-08-21
 
 - Repair stale `tmux gen` chat bindings when a tmux window ID is reused by a

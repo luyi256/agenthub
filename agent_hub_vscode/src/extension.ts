@@ -96,6 +96,18 @@ type HubApproval = {
   status: string;
 };
 
+type SearchResult = HubMessage & {
+  seq: number;
+  session_uid: string;
+  session_name: string;
+  session_title: string;
+  session_status: string;
+  session_presence: string;
+  runtime: string;
+  transport?: string | null;
+  excerpt: string;
+};
+
 type Snapshot = {
   sessions: HubSession[];
   counts: Record<string, number>;
@@ -475,6 +487,20 @@ class AgentHubViewProvider implements vscode.WebviewViewProvider {
         case "createSession":
           await this.createSession(message.payload ?? {});
           break;
+        case "searchRecords":
+          await this.searchRecords(
+            sourceView,
+            String(message.query ?? ""),
+            String(message.role ?? "")
+          );
+          break;
+        case "openSearchResult":
+          await this.openSearchResult(
+            sourceView,
+            String(message.sessionUid ?? ""),
+            String(message.messageId ?? "")
+          );
+          break;
         case "sendMessage":
           await this.sendMessage(
             sourceView,
@@ -617,6 +643,70 @@ class AgentHubViewProvider implements vscode.WebviewViewProvider {
       this.pendingCreate = false;
       this.post({ type: "creatingSession", value: false });
     }
+  }
+
+  private async searchRecords(
+    sourceView: vscode.WebviewView,
+    query: string,
+    role: string
+  ): Promise<void> {
+    const workspace = currentWorkspaceIdentity();
+    const normalized = query.trim();
+    if (!workspace) {
+      throw new Error("请先打开一个 VS Code 项目文件夹。");
+    }
+    if (normalized.length < 2) {
+      throw new Error("搜索词至少需要 2 个字符。");
+    }
+    const params = new URLSearchParams({
+      q: normalized,
+      cwd: workspace.cwd,
+      workspace_id: workspace.id.slice(0, 10),
+      limit: "60"
+    });
+    if (role) {
+      params.set("role", role);
+    }
+    const response = await (await this.connectedClient()).get<{
+      query: string;
+      count: number;
+      results: SearchResult[];
+    }>(`/api/search/messages?${params.toString()}`);
+    await this.postTo(sourceView, {
+      type: "searchResults",
+      query: response.query,
+      results: response.results.map((result) => ({
+        ...result,
+        rendered_content: markdown.render(result.content || "")
+      }))
+    });
+  }
+
+  private async openSearchResult(
+    sourceView: vscode.WebviewView,
+    sessionUid: string,
+    messageId: string
+  ): Promise<void> {
+    const workspace = currentWorkspaceIdentity();
+    if (!workspace || !sessionUid || !messageId) {
+      throw new Error("搜索结果定位请求不完整。");
+    }
+    const snapshot = await (await this.connectedClient()).get<Snapshot>(
+      "/api/snapshot"
+    );
+    const session = this.sessionsForWorkspace(snapshot, workspace).find(
+      (candidate) => candidate.session_uid === sessionUid
+    );
+    if (!session || session.status === "closed") {
+      throw new Error("该记录所属会话已经关闭，只能在搜索结果中查看。");
+    }
+    this.selectedSessionUid = sessionUid;
+    await this.refresh(true);
+    await this.postTo(sourceView, {
+      type: "revealMessage",
+      sessionUid,
+      messageId
+    });
   }
 
   private async sendMessage(
@@ -1305,6 +1395,7 @@ class AgentHubViewProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
     <div class="head-actions">
+      <button class="icon-button" id="searchRecords" type="button" title="搜索过往记录 (Ctrl+F)" aria-label="搜索过往记录">⌕</button>
       <button class="head-button" id="handoffOpen" type="button" title="发送协作消息给其他会话">协作</button>
       <button class="icon-button" id="refresh" type="button" title="刷新">↻</button>
       <button class="icon-button" id="currentMenuButton" type="button" title="会话设置" aria-label="会话设置">⋯</button>
@@ -1401,6 +1492,25 @@ class AgentHubViewProvider implements vscode.WebviewViewProvider {
         <button type="button" id="closeHistory" aria-label="关闭">×</button>
       </div>
       <div class="history-list" id="historyList"></div>
+    </div>
+  </dialog>
+  <dialog id="searchDialog">
+    <div class="search-dialog">
+      <div class="dialog-head">
+        <div><strong>搜索过往记录</strong><p>搜索当前项目下所有会话的用户消息与 Agent 回复，包括已关闭会话。</p></div>
+        <button type="button" id="closeSearch" aria-label="关闭">×</button>
+      </div>
+      <form class="search-form" id="searchForm">
+        <input id="searchInput" autocomplete="off" placeholder="输入至少 2 个字符">
+        <select id="searchRole" aria-label="消息类型">
+          <option value="">全部消息</option>
+          <option value="human">我的消息</option>
+          <option value="assistant">Agent 回复</option>
+        </select>
+        <button class="primary" id="runSearch" type="submit">搜索</button>
+      </form>
+      <div class="search-summary" id="searchSummary">输入关键词搜索历史对话。</div>
+      <div class="search-results" id="searchResults"></div>
     </div>
   </dialog>
   <div class="toast" id="toast"></div>
@@ -2544,7 +2654,8 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 
 #newForm,
 #handoffForm,
-.history-dialog {
+.history-dialog,
+.search-dialog {
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -2620,6 +2731,92 @@ dialog select {
 .history-item-name { overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .history-item-meta { color: var(--muted); font-size: 9px; }
 
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+  gap: 6px;
+}
+.search-form button { padding: 6px 11px; border-radius: 5px; }
+.search-summary { min-height: 17px; color: var(--muted); font-size: 10px; }
+.search-results {
+  display: grid;
+  gap: 7px;
+  max-height: 58vh;
+  overflow: auto;
+}
+.search-result {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+}
+.search-result-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.search-result-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result-role { flex: none; }
+.search-result-time { margin-left: auto; flex: none; }
+.search-excerpt {
+  padding: 4px 8px 8px;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.search-excerpt mark {
+  border-radius: 2px;
+  background: var(--vscode-editor-findMatchHighlightBackground, #f2cc60);
+  color: inherit;
+}
+.search-result details { border-top: 1px solid var(--line); }
+.search-result summary {
+  padding: 5px 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  user-select: none;
+}
+.search-full {
+  max-height: 210px;
+  overflow: auto;
+  padding: 2px 8px 8px;
+  font-size: 11px;
+  user-select: text;
+}
+.search-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 8px 7px;
+}
+.search-result-actions button {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 9px;
+}
+.search-result-actions button:disabled { opacity: .45; }
+.search-empty { padding: 20px 8px; color: var(--muted); text-align: center; }
+
+.message.search-reveal .bubble {
+  outline: 2px solid var(--vscode-editor-findMatchBorder, var(--focus));
+  outline-offset: 2px;
+}
+
 .window-menu {
   position: fixed;
   z-index: 50;
@@ -2656,6 +2853,8 @@ dialog select {
   .version,
   .subtitle-separator,
   #sessionTags { display: none; }
+  .search-form { grid-template-columns: minmax(0, 1fr) auto; }
+  #searchRole { grid-column: 1 / -1; grid-row: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2696,7 +2895,12 @@ const state = {
   restoringTabScroll: false,
   lastViewportWidth: globalThis.innerWidth,
   resizeFrame: 0,
-  transcriptRenderPending: false
+  transcriptRenderPending: false,
+  searching: false,
+  searchQuery: "",
+  searchResults: [],
+  isComposing: false,
+  lastCompositionEndAt: 0
 };
 
 const $ = (id) => document.getElementById(id);
@@ -3220,6 +3424,7 @@ function renderMessages() {
         );
       return '<article class="message ' + esc(roleClass) +
         '" data-timeline-key="' + esc(entry.key) +
+        '" data-message-id="' + esc(message.message_id || "") +
         '"><div class="message-inner"><div class="meta">' +
         esc(roleLabel[message.role] || message.role) + " · " +
         esc(statusLabel[message.status] || message.status) +
@@ -3514,6 +3719,106 @@ function latestAssistantReply() {
   );
 }
 
+function formatSearchTime(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function highlightSearchExcerpt(value, query) {
+  const text = String(value || "");
+  const needle = String(query || "").trim();
+  if (!needle) return esc(text);
+  const lower = text.toLocaleLowerCase();
+  const foldedNeedle = needle.toLocaleLowerCase();
+  let offset = 0;
+  let html = "";
+  while (offset < text.length) {
+    const index = lower.indexOf(foldedNeedle, offset);
+    if (index < 0) {
+      html += esc(text.slice(offset));
+      break;
+    }
+    html += esc(text.slice(offset, index));
+    html += "<mark>" + esc(text.slice(index, index + needle.length)) + "</mark>";
+    offset = index + needle.length;
+  }
+  return html;
+}
+
+function renderSearchResults() {
+  const root = $("searchResults");
+  const summary = $("searchSummary");
+  $("runSearch").disabled = state.searching;
+  $("runSearch").textContent = state.searching ? "搜索中…" : "搜索";
+  if (state.searching) {
+    summary.textContent = "正在搜索当前项目的历史消息…";
+  } else if (!state.searchQuery) {
+    summary.textContent = "输入关键词搜索历史对话。";
+  } else {
+    summary.textContent =
+      "“" + state.searchQuery + "” · " + state.searchResults.length + " 条结果";
+  }
+  if (!state.searchResults.length) {
+    root.innerHTML = state.searchQuery && !state.searching
+      ? '<div class="search-empty">没有找到匹配记录</div>'
+      : "";
+    return;
+  }
+  root.innerHTML = state.searchResults.map((result) => {
+    const role = result.role === "human" ? "你" :
+      result.role === "assistant" ? "Agent" : "系统";
+    const canOpen =
+      Boolean(result.managed) &&
+      result.session_status !== "closed" &&
+      (
+        result.transport !== "gen-tmux-relay" ||
+        result.session_presence === "online"
+      );
+    return '<article class="search-result">' +
+      '<div class="search-result-head"><span class="search-result-name">' +
+      esc(result.session_name || result.session_title || "未命名会话") +
+      '</span><span class="search-result-role">' + esc(role) +
+      '</span><span class="search-result-time">' +
+      esc(formatSearchTime(result.created_at)) + '</span></div>' +
+      '<div class="search-excerpt">' +
+      highlightSearchExcerpt(result.excerpt, state.searchQuery) +
+      '</div><details><summary>查看完整记录</summary>' +
+      '<div class="search-full">' +
+      (result.rendered_content || fallbackMessageHtml(result.content || "")) +
+      '</div></details><div class="search-result-actions">' +
+      '<button type="button" data-open-search-session="' +
+      esc(result.session_uid) + '" data-search-message="' +
+      esc(result.message_id) + '"' + (canOpen ? "" : " disabled") + ">" +
+      (canOpen ? "打开所属会话" : "仅可预览") +
+      "</button></div></article>";
+  }).join("");
+  root.querySelectorAll("[data-open-search-session]").forEach((button) => {
+    button.onclick = () => {
+      if (button.disabled) return;
+      post("openSearchResult", {
+        sessionUid: button.dataset.openSearchSession,
+        messageId: button.dataset.searchMessage
+      });
+    };
+  });
+}
+
+function openSearchDialog() {
+  if (!state.workspace) {
+    toast("请先打开一个 VS Code 项目文件夹。");
+    return;
+  }
+  $("searchDialog").showModal();
+  renderSearchResults();
+  setTimeout(() => $("searchInput").focus(), 0);
+}
+
 function openEntryMenu(entry, x, y) {
   state.currentMenuEntry = entry;
   const menu = $("windowMenu");
@@ -3691,6 +3996,10 @@ window.addEventListener("message", (event) => {
       );
     }
   } else if (message.type === "error") {
+    if (state.searching) {
+      state.searching = false;
+      renderSearchResults();
+    }
     toast(message.message);
   } else if (message.type === "serverOffline") {
     state.serverOnline = false;
@@ -3708,6 +4017,27 @@ window.addEventListener("message", (event) => {
     $("input").focus();
   } else if (message.type === "sessionClosed") {
     toast("会话已关闭");
+  } else if (message.type === "searchResults") {
+    state.searching = false;
+    state.searchQuery = message.query || "";
+    state.searchResults = message.results || [];
+    renderSearchResults();
+  } else if (message.type === "revealMessage") {
+    $("searchDialog").close();
+    requestAnimationFrame(() => {
+      const target = document.querySelector(
+        '[data-message-id="' + (globalThis.CSS?.escape
+          ? globalThis.CSS.escape(message.messageId)
+          : String(message.messageId).replace(/["\\]/g, "\\$&")) + '"]'
+      );
+      if (target) {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        target.classList.add("search-reveal");
+        setTimeout(() => target.classList.remove("search-reveal"), 1800);
+      } else {
+        toast("已打开所属会话；该记录较早，请在搜索结果中查看全文。");
+      }
+    });
   }
 });
 
@@ -3782,6 +4112,7 @@ $("newMessages").onclick = () => {
 };
 
 $("newSession").onclick = openNewDialog;
+$("searchRecords").onclick = openSearchDialog;
 $("newRuntime").onchange = updateNewModelOptions;
 $("newModel").onchange = updateNewModelOptions;
 $("historySessions").onclick = openHistoryDialog;
@@ -3793,6 +4124,7 @@ $("cancelCreate").onclick = () => $("newDialog").close();
 $("closeHandoff").onclick = () => $("handoffDialog").close();
 $("cancelHandoff").onclick = () => $("handoffDialog").close();
 $("closeHistory").onclick = () => $("historyDialog").close();
+$("closeSearch").onclick = () => $("searchDialog").close();
 $("useLatestReply").onclick = () => {
   const reply = latestAssistantReply();
   if (!reply) {
@@ -3852,6 +4184,23 @@ $("newForm").onsubmit = (event) => {
       cwd: $("newCwd").value,
       permission_profile: $("newPermission").value
     }
+  });
+};
+
+$("searchForm").onsubmit = (event) => {
+  event.preventDefault();
+  const query = $("searchInput").value.trim();
+  if (query.length < 2 || state.searching) {
+    if (query.length < 2) toast("搜索词至少需要 2 个字符。");
+    return;
+  }
+  state.searching = true;
+  state.searchQuery = query;
+  state.searchResults = [];
+  renderSearchResults();
+  post("searchRecords", {
+    query,
+    role: $("searchRole").value
   });
 };
 
@@ -3927,14 +4276,41 @@ $("composer").onsubmit = (event) => {
 
 $("input").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.isComposing ||
+      state.isComposing ||
+      event.keyCode === 229 ||
+      Date.now() - state.lastCompositionEndAt < 120
+    ) {
+      return;
+    }
     event.preventDefault();
     $("composer").requestSubmit();
   }
 };
+$("input").addEventListener("compositionstart", () => {
+  state.isComposing = true;
+});
+$("input").addEventListener("compositionend", () => {
+  state.isComposing = false;
+  state.lastCompositionEndAt = Date.now();
+});
 
 document.addEventListener("click", (event) => {
   if (!event.target.closest("#windowMenu") && !event.target.closest("#currentMenuButton")) {
     $("windowMenu").classList.add("hidden");
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (
+    (event.ctrlKey || event.metaKey) &&
+    event.key.toLocaleLowerCase() === "f" &&
+    !event.shiftKey &&
+    !event.altKey
+  ) {
+    event.preventDefault();
+    openSearchDialog();
   }
 });
 

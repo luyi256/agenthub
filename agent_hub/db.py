@@ -800,6 +800,99 @@ class HubDatabase:
             ).fetchall()
         return [self._message_dict(row) for row in rows]
 
+    def search_messages(
+        self,
+        *,
+        cwd: str,
+        query: str,
+        workspace_id: str | None = None,
+        role: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        normalized = query.strip()
+        if not normalized:
+            return []
+        workspace_clause = "sessions.cwd = ?"
+        values: list[Any] = [cwd]
+        if workspace_id:
+            workspace_clause = (
+                "(sessions.cwd = ? OR "
+                "json_extract(sessions.managed_config_json, '$.workspace_id') = ?)"
+            )
+            values.append(workspace_id)
+        clauses = [
+            workspace_clause,
+            "messages.content != ''",
+            "instr(lower(messages.content), lower(?)) > 0",
+        ]
+        values.append(normalized)
+        if role:
+            clauses.append("messages.role = ?")
+            values.append(role)
+        values.append(min(max(limit, 1), 100))
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    messages.*,
+                    sessions.runtime,
+                    sessions.runtime_id,
+                    sessions.alias,
+                    sessions.native_name,
+                    sessions.auto_native_name,
+                    sessions.user_title,
+                    sessions.discovered_title,
+                    sessions.status AS session_status,
+                    sessions.presence AS session_presence,
+                    sessions.transport,
+                    sessions.managed
+                FROM messages
+                JOIN sessions
+                  ON sessions.session_uid = messages.session_uid
+                WHERE {' AND '.join(clauses)}
+                ORDER BY messages.seq DESC
+                LIMIT ?
+                """,
+                values,
+            ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            item["managed"] = bool(item.get("managed"))
+            item["session_name"] = (
+                item.get("alias")
+                or item.get("native_name")
+                or item.get("auto_native_name")
+                or "未命名会话"
+            )
+            item["session_title"] = (
+                item.get("user_title")
+                or item.get("discovered_title")
+                or item.get("native_name")
+                or item.get("auto_native_name")
+                or item["session_name"]
+            )
+            item["excerpt"] = self._search_excerpt(
+                item.get("content") or "", normalized
+            )
+            if len(item["content"]) > 12_000:
+                item["content"] = item["content"][:12_000] + "\n…"
+            results.append(item)
+        return results
+
+    @staticmethod
+    def _search_excerpt(content: str, query: str, radius: int = 110) -> str:
+        folded_content = content.lower()
+        index = folded_content.find(query.lower())
+        if index < 0:
+            return content[: radius * 2]
+        start = max(0, index - radius)
+        end = min(len(content), index + len(query) + radius)
+        prefix = "…" if start else ""
+        suffix = "…" if end < len(content) else ""
+        return prefix + content[start:end].strip() + suffix
+
     def add_approval(
         self,
         *,

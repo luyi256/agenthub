@@ -1,3 +1,4 @@
+
 :root {
   color-scheme: light dark;
   --bg: var(--vscode-sideBar-background);
@@ -891,7 +892,8 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 
 #newForm,
 #handoffForm,
-.history-dialog {
+.history-dialog,
+.search-dialog {
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -967,6 +969,92 @@ dialog select {
 .history-item-name { overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .history-item-meta { color: var(--muted); font-size: 9px; }
 
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+  gap: 6px;
+}
+.search-form button { padding: 6px 11px; border-radius: 5px; }
+.search-summary { min-height: 17px; color: var(--muted); font-size: 10px; }
+.search-results {
+  display: grid;
+  gap: 7px;
+  max-height: 58vh;
+  overflow: auto;
+}
+.search-result {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+}
+.search-result-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.search-result-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result-role { flex: none; }
+.search-result-time { margin-left: auto; flex: none; }
+.search-excerpt {
+  padding: 4px 8px 8px;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.search-excerpt mark {
+  border-radius: 2px;
+  background: var(--vscode-editor-findMatchHighlightBackground, #f2cc60);
+  color: inherit;
+}
+.search-result details { border-top: 1px solid var(--line); }
+.search-result summary {
+  padding: 5px 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  user-select: none;
+}
+.search-full {
+  max-height: 210px;
+  overflow: auto;
+  padding: 2px 8px 8px;
+  font-size: 11px;
+  user-select: text;
+}
+.search-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 8px 7px;
+}
+.search-result-actions button {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 9px;
+}
+.search-result-actions button:disabled { opacity: .45; }
+.search-empty { padding: 20px 8px; color: var(--muted); text-align: center; }
+
+.message.search-reveal .bubble {
+  outline: 2px solid var(--vscode-editor-findMatchBorder, var(--focus));
+  outline-offset: 2px;
+}
+
 .window-menu {
   position: fixed;
   z-index: 50;
@@ -1003,6 +1091,8 @@ dialog select {
   .version,
   .subtitle-separator,
   #sessionTags { display: none; }
+  .search-form { grid-template-columns: minmax(0, 1fr) auto; }
+  #searchRole { grid-column: 1 / -1; grid-row: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {

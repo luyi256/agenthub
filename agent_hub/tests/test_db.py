@@ -97,6 +97,69 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(synced["content"], "replayed")
         self.assertEqual(synced["metadata"]["source"], "worker-state")
 
+    def test_search_messages_is_project_scoped_and_returns_context(self) -> None:
+        first, second = self.db.list_sessions()
+        self.db.patch_session(first["session_uid"], alias="project/first")
+        self.db.add_message(
+            first["session_uid"],
+            "human",
+            "请继续生成这一批视频，并保留原始构图。",
+        )
+        self.db.add_message(
+            second["session_uid"],
+            "assistant",
+            "视频生成已经完成，文件位于 /tmp/video.mp4。",
+        )
+        outside = self.db.register_managed_session(
+            runtime="tcodex",
+            runtime_id="outside-thread",
+            runtime_version="1.0",
+            native_name="outside",
+            alias="outside",
+            user_title=None,
+            role=None,
+            cwd="/tmp/other-project",
+            transport="tmux-worker",
+            managed_config={},
+            capabilities={"chat": True},
+        )
+        self.db.add_message(
+            outside["session_uid"],
+            "assistant",
+            "外部项目也出现了视频生成。",
+        )
+
+        results = self.db.search_messages(
+            cwd="/tmp/project",
+            query="视频",
+            workspace_id=None,
+            limit=20,
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(
+            {item["session_uid"] for item in results},
+            {first["session_uid"], second["session_uid"]},
+        )
+        self.assertTrue(all("视频" in item["excerpt"] for item in results))
+        self.assertIn("session_name", results[0])
+
+    def test_search_messages_can_filter_role(self) -> None:
+        first = self.db.list_sessions()[0]
+        self.db.add_message(first["session_uid"], "human", "查找关键词 alpha")
+        self.db.add_message(
+            first["session_uid"], "assistant", "回复关键词 alpha"
+        )
+
+        results = self.db.search_messages(
+            cwd="/tmp/project",
+            query="ALPHA",
+            role="assistant",
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["role"], "assistant")
+
     def test_close_session_preserves_history_and_finalizes_pending_state(
         self,
     ) -> None:

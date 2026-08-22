@@ -15,6 +15,7 @@ from agent_hub.app import (
     _activity_summary,
     api_activity_detail,
     api_create_managed_session,
+    api_search_messages,
 )
 from agent_hub.config import HubConfig
 
@@ -216,6 +217,63 @@ class ActivityApiTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["input"]["cmd"], "printf ok")
         self.assertEqual(payload["result"], "ok\nsecond line")
+
+
+class SearchMessagesApiTests(unittest.IsolatedAsyncioTestCase):
+    def _request(
+        self,
+        *,
+        query: str,
+        cwd: str,
+        role: str | None = None,
+    ) -> Request:
+        database = SimpleNamespace(
+            search_messages=lambda **kwargs: [
+                {
+                    "message_id": "msg-1",
+                    "session_uid": "ses-1",
+                    "content": "找到记录",
+                    "excerpt": "找到记录",
+                    "role": kwargs.get("role") or "assistant",
+                }
+            ]
+        )
+        app = SimpleNamespace(
+            state=SimpleNamespace(hub=SimpleNamespace(db=database))
+        )
+        values = f"q={query}&cwd={cwd}"
+        if role:
+            values += f"&role={role}"
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/search/messages",
+                "query_string": values.encode(),
+                "headers": [],
+                "app": app,
+            }
+        )
+
+    async def test_search_messages_returns_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            response = await api_search_messages(
+                self._request(query="记录", cwd=tmp, role="assistant")
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["results"][0]["content"], "找到记录")
+
+    async def test_search_messages_rejects_short_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            response = await api_search_messages(
+                self._request(query="a", cwd=tmp)
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("至少需要 2 个字符", response.body.decode())
 
 
 class FakeImportGenTmux:

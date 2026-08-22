@@ -1,3 +1,4 @@
+
 const vscode = acquireVsCodeApi();
 const state = {
   workspace: null,
@@ -29,7 +30,12 @@ const state = {
   restoringTabScroll: false,
   lastViewportWidth: globalThis.innerWidth,
   resizeFrame: 0,
-  transcriptRenderPending: false
+  transcriptRenderPending: false,
+  searching: false,
+  searchQuery: "",
+  searchResults: [],
+  isComposing: false,
+  lastCompositionEndAt: 0
 };
 
 const $ = (id) => document.getElementById(id);
@@ -553,6 +559,7 @@ function renderMessages() {
         );
       return '<article class="message ' + esc(roleClass) +
         '" data-timeline-key="' + esc(entry.key) +
+        '" data-message-id="' + esc(message.message_id || "") +
         '"><div class="message-inner"><div class="meta">' +
         esc(roleLabel[message.role] || message.role) + " · " +
         esc(statusLabel[message.status] || message.status) +
@@ -847,6 +854,106 @@ function latestAssistantReply() {
   );
 }
 
+function formatSearchTime(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function highlightSearchExcerpt(value, query) {
+  const text = String(value || "");
+  const needle = String(query || "").trim();
+  if (!needle) return esc(text);
+  const lower = text.toLocaleLowerCase();
+  const foldedNeedle = needle.toLocaleLowerCase();
+  let offset = 0;
+  let html = "";
+  while (offset < text.length) {
+    const index = lower.indexOf(foldedNeedle, offset);
+    if (index < 0) {
+      html += esc(text.slice(offset));
+      break;
+    }
+    html += esc(text.slice(offset, index));
+    html += "<mark>" + esc(text.slice(index, index + needle.length)) + "</mark>";
+    offset = index + needle.length;
+  }
+  return html;
+}
+
+function renderSearchResults() {
+  const root = $("searchResults");
+  const summary = $("searchSummary");
+  $("runSearch").disabled = state.searching;
+  $("runSearch").textContent = state.searching ? "搜索中…" : "搜索";
+  if (state.searching) {
+    summary.textContent = "正在搜索当前项目的历史消息…";
+  } else if (!state.searchQuery) {
+    summary.textContent = "输入关键词搜索历史对话。";
+  } else {
+    summary.textContent =
+      "“" + state.searchQuery + "” · " + state.searchResults.length + " 条结果";
+  }
+  if (!state.searchResults.length) {
+    root.innerHTML = state.searchQuery && !state.searching
+      ? '<div class="search-empty">没有找到匹配记录</div>'
+      : "";
+    return;
+  }
+  root.innerHTML = state.searchResults.map((result) => {
+    const role = result.role === "human" ? "你" :
+      result.role === "assistant" ? "Agent" : "系统";
+    const canOpen =
+      Boolean(result.managed) &&
+      result.session_status !== "closed" &&
+      (
+        result.transport !== "gen-tmux-relay" ||
+        result.session_presence === "online"
+      );
+    return '<article class="search-result">' +
+      '<div class="search-result-head"><span class="search-result-name">' +
+      esc(result.session_name || result.session_title || "未命名会话") +
+      '</span><span class="search-result-role">' + esc(role) +
+      '</span><span class="search-result-time">' +
+      esc(formatSearchTime(result.created_at)) + '</span></div>' +
+      '<div class="search-excerpt">' +
+      highlightSearchExcerpt(result.excerpt, state.searchQuery) +
+      '</div><details><summary>查看完整记录</summary>' +
+      '<div class="search-full">' +
+      (result.rendered_content || fallbackMessageHtml(result.content || "")) +
+      '</div></details><div class="search-result-actions">' +
+      '<button type="button" data-open-search-session="' +
+      esc(result.session_uid) + '" data-search-message="' +
+      esc(result.message_id) + '"' + (canOpen ? "" : " disabled") + ">" +
+      (canOpen ? "打开所属会话" : "仅可预览") +
+      "</button></div></article>";
+  }).join("");
+  root.querySelectorAll("[data-open-search-session]").forEach((button) => {
+    button.onclick = () => {
+      if (button.disabled) return;
+      post("openSearchResult", {
+        sessionUid: button.dataset.openSearchSession,
+        messageId: button.dataset.searchMessage
+      });
+    };
+  });
+}
+
+function openSearchDialog() {
+  if (!state.workspace) {
+    toast("请先打开一个 VS Code 项目文件夹。");
+    return;
+  }
+  $("searchDialog").showModal();
+  renderSearchResults();
+  setTimeout(() => $("searchInput").focus(), 0);
+}
+
 function openEntryMenu(entry, x, y) {
   state.currentMenuEntry = entry;
   const menu = $("windowMenu");
@@ -1024,6 +1131,10 @@ window.addEventListener("message", (event) => {
       );
     }
   } else if (message.type === "error") {
+    if (state.searching) {
+      state.searching = false;
+      renderSearchResults();
+    }
     toast(message.message);
   } else if (message.type === "serverOffline") {
     state.serverOnline = false;
@@ -1041,6 +1152,27 @@ window.addEventListener("message", (event) => {
     $("input").focus();
   } else if (message.type === "sessionClosed") {
     toast("会话已关闭");
+  } else if (message.type === "searchResults") {
+    state.searching = false;
+    state.searchQuery = message.query || "";
+    state.searchResults = message.results || [];
+    renderSearchResults();
+  } else if (message.type === "revealMessage") {
+    $("searchDialog").close();
+    requestAnimationFrame(() => {
+      const target = document.querySelector(
+        '[data-message-id="' + (globalThis.CSS?.escape
+          ? globalThis.CSS.escape(message.messageId)
+          : String(message.messageId).replace(/["\\]/g, "\\$&")) + '"]'
+      );
+      if (target) {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        target.classList.add("search-reveal");
+        setTimeout(() => target.classList.remove("search-reveal"), 1800);
+      } else {
+        toast("已打开所属会话；该记录较早，请在搜索结果中查看全文。");
+      }
+    });
   }
 });
 
@@ -1115,6 +1247,7 @@ $("newMessages").onclick = () => {
 };
 
 $("newSession").onclick = openNewDialog;
+$("searchRecords").onclick = openSearchDialog;
 $("newRuntime").onchange = updateNewModelOptions;
 $("newModel").onchange = updateNewModelOptions;
 $("historySessions").onclick = openHistoryDialog;
@@ -1126,6 +1259,7 @@ $("cancelCreate").onclick = () => $("newDialog").close();
 $("closeHandoff").onclick = () => $("handoffDialog").close();
 $("cancelHandoff").onclick = () => $("handoffDialog").close();
 $("closeHistory").onclick = () => $("historyDialog").close();
+$("closeSearch").onclick = () => $("searchDialog").close();
 $("useLatestReply").onclick = () => {
   const reply = latestAssistantReply();
   if (!reply) {
@@ -1185,6 +1319,23 @@ $("newForm").onsubmit = (event) => {
       cwd: $("newCwd").value,
       permission_profile: $("newPermission").value
     }
+  });
+};
+
+$("searchForm").onsubmit = (event) => {
+  event.preventDefault();
+  const query = $("searchInput").value.trim();
+  if (query.length < 2 || state.searching) {
+    if (query.length < 2) toast("搜索词至少需要 2 个字符。");
+    return;
+  }
+  state.searching = true;
+  state.searchQuery = query;
+  state.searchResults = [];
+  renderSearchResults();
+  post("searchRecords", {
+    query,
+    role: $("searchRole").value
   });
 };
 
@@ -1260,14 +1411,41 @@ $("composer").onsubmit = (event) => {
 
 $("input").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.isComposing ||
+      state.isComposing ||
+      event.keyCode === 229 ||
+      Date.now() - state.lastCompositionEndAt < 120
+    ) {
+      return;
+    }
     event.preventDefault();
     $("composer").requestSubmit();
   }
 };
+$("input").addEventListener("compositionstart", () => {
+  state.isComposing = true;
+});
+$("input").addEventListener("compositionend", () => {
+  state.isComposing = false;
+  state.lastCompositionEndAt = Date.now();
+});
 
 document.addEventListener("click", (event) => {
   if (!event.target.closest("#windowMenu") && !event.target.closest("#currentMenuButton")) {
     $("windowMenu").classList.add("hidden");
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (
+    (event.ctrlKey || event.metaKey) &&
+    event.key.toLocaleLowerCase() === "f" &&
+    !event.shiftKey &&
+    !event.altKey
+  ) {
+    event.preventDefault();
+    openSearchDialog();
   }
 });
 

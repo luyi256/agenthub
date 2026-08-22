@@ -293,3 +293,21 @@ test("transcript polling preserves an active text selection", () => {
   assert.match(extensionSource, /document\.addEventListener\("selectionchange"/);
   assert.match(extensionSource, /\.bubble \*\s*\{\s*user-select: text/);
 });
+
+test("IME composition Enter commits text without sending the message", () => {
+  assert.match(extensionSource, /compositionstart/);
+  assert.match(extensionSource, /compositionend/);
+  assert.match(extensionSource, /event\.isComposing/);
+  assert.match(extensionSource, /event\.keyCode === 229/);
+  assert.match(extensionSource, /lastCompositionEndAt/);
+});
+
+test("past records are searchable across the current workspace", () => {
+  assert.match(extensionSource, /case "searchRecords"/);
+  assert.match(extensionSource, /\/api\/search\/messages/);
+  assert.match(extensionSource, /id="searchDialog"/);
+  assert.match(extensionSource, /function renderSearchResults\(\)/);
+  assert.match(extensionSource, /highlightSearchExcerpt/);
+  assert.match(extensionSource, /包括已关闭会话/);
+  assert.match(extensionSource, /event\.key\.toLocaleLowerCase\(\) === "f"/);
+});

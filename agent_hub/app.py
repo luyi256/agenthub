@@ -458,6 +458,48 @@ async def api_snapshot(request: Request) -> JSONResponse:
     return JSONResponse(get_hub(request).snapshot())
 
 
+async def api_search_messages(request: Request) -> JSONResponse:
+    query = (request.query_params.get("q") or "").strip()
+    cwd = (request.query_params.get("cwd") or "").strip()
+    workspace_id = (
+        request.query_params.get("workspace_id") or ""
+    ).strip() or None
+    role = (request.query_params.get("role") or "").strip() or None
+    if len(query) < 2:
+        return JSONResponse({"error": "搜索词至少需要 2 个字符"}, status_code=400)
+    if len(query) > 200:
+        return JSONResponse({"error": "搜索词不能超过 200 个字符"}, status_code=400)
+    if role not in {None, "human", "assistant", "system"}:
+        return JSONResponse({"error": "不支持的消息角色"}, status_code=400)
+    try:
+        canonical_cwd = str(Path(cwd).expanduser().resolve())
+    except Exception:
+        return JSONResponse({"error": "工作目录无效"}, status_code=400)
+    if not cwd or not Path(canonical_cwd).is_dir():
+        return JSONResponse({"error": "工作目录不存在"}, status_code=400)
+    try:
+        limit = int(request.query_params.get("limit") or "50")
+    except ValueError:
+        return JSONResponse({"error": "limit 必须为整数"}, status_code=400)
+    results = await asyncio.to_thread(
+        get_hub(request).db.search_messages,
+        cwd=canonical_cwd,
+        query=query,
+        workspace_id=workspace_id,
+        role=role,
+        limit=limit,
+    )
+    return JSONResponse(
+        {
+            "query": query,
+            "cwd": canonical_cwd,
+            "workspace_id": workspace_id,
+            "count": len(results),
+            "results": results,
+        }
+    )
+
+
 async def api_gen_windows(request: Request) -> JSONResponse:
     try:
         snapshot = await get_hub(request).gen_snapshot(
@@ -945,6 +987,7 @@ def create_app(config: HubConfig | None = None) -> Starlette:
         Route("/static/{name}", static_file),
         Route("/api/health", api_health),
         Route("/api/snapshot", api_snapshot),
+        Route("/api/search/messages", api_search_messages),
         Route("/api/tmux/gen/windows", api_gen_windows),
         Route(
             "/api/tmux/gen/windows/{window_id}",
